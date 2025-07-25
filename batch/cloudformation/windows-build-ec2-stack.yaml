@@ -280,9 +280,45 @@ Resources:
           - 7-Zip
           - Notepad++
           
+          ## Remote Access
+          
+          ### PowerShell Remote Connection (Recommended)
+          From your local PowerShell (as Administrator):
+          
+          1. First, test connectivity:
+             ```powershell
+             Test-WSMan -ComputerName <INSTANCE_PUBLIC_IP> -Port 5985
+             ```
+          
+          2. Connect to the remote session:
+             ```powershell
+             Enter-PSSession -ComputerName <INSTANCE_PUBLIC_IP> -Credential (Get-Credential) -Port 5985
+             ```
+          
+          3. When prompted, enter the EC2 instance credentials:
+             - Username: Administrator
+             - Password: Use the password retrieved via EC2 console or AWS CLI
+          
+          ### Getting Windows Password
+          Use AWS CLI or EC2 console to decrypt the administrator password:
+          ```bash
+          aws ec2 get-password-data --instance-id <INSTANCE_ID> --priv-launch-key <PATH_TO_PRIVATE_KEY>
+          ```
+          
+          ### Alternative: RDP Connection
+          If RDP is preferred and available:
+          ```
+          mstsc /v:<INSTANCE_PUBLIC_IP>:3389
+          ```
+          
           ## Usage
           
-          1. Clone your repository to C:\workspace
+          1. Clone your repository to C:\workspace:
+             ```powershell
+             cd C:\workspace
+             git clone <your-repository-url>
+             ```
+          
           2. Use the build-and-deploy.ps1 script to build and push Docker images:
              ```powershell
              cd C:\workspace\your-project
@@ -303,11 +339,33 @@ Resources:
           - Docker is configured for Windows containers mode
           - Current user is added to docker-users group
           - AWS CLI is configured with instance role permissions
+          - PowerShell Remoting is enabled on ports 5985 (HTTP) and 5986 (HTTPS)
+          - WinRM service is configured for remote access
           "@
           Set-Content -Path "C:\workspace\README.md" -Value $readme
           
+          # Configure PowerShell Remoting
+          Enable-PSRemoting -Force
+          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+          
+          # Configure WinRM service
+          winrm quickconfig -q
+          winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+          winrm set winrm/config/service/auth '@{Basic="true"}'
+          winrm set winrm/config/client/auth '@{Basic="true"}'
+          winrm set winrm/config/listener?Address=*+Transport=HTTP '@{Port="5985"}'
+          
+          # Restart WinRM service
+          Restart-Service WinRM
+          Set-Service -Name WinRM -StartupType Automatic
+          
+          # Configure Windows Firewall for WinRM
+          New-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -Enabled True
+          New-NetFirewallRule -DisplayName "Windows Remote Management (HTTPS-In)" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -Enabled True
+          
           # Signal completion
           Write-Host "Windows build server setup completed successfully"
+          Write-Host "PowerShell Remoting is enabled on ports 5985 (HTTP) and 5986 (HTTPS)"
           
           # Restart to ensure all group memberships take effect
           Restart-Computer -Force
@@ -325,26 +383,34 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-InstanceId'
       
-  # InstancePublicIP:
-  #   Description: Public IP address of the Windows build server
-  #   Value: !GetAtt WindowsBuildInstance.PublicIp
-  #   Export:
-  #     Name: !Sub '${AWS::StackName}-PublicIP'
+  InstancePublicIP:
+    Description: Public IP address of the Windows build server
+    Value: !GetAtt WindowsBuildInstance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
       
-  # InstancePrivateIP:
-  #   Description: Private IP address of the Windows build server
-  #   Value: !GetAtt WindowsBuildInstance.PrivateIp
-  #   Export:
-  #     Name: !Sub '${AWS::StackName}-PrivateIP'
+  InstancePrivateIP:
+    Description: Private IP address of the Windows build server
+    Value: !GetAtt WindowsBuildInstance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateIP'
       
-  # RDPConnectionString:
-  #   Description: RDP connection information
-  #   Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
+  PowerShellRemoteConnectionInfo:
+    Description: PowerShell Remote connection command
+    Value: !Sub 'Enter-PSSession -ComputerName ${WindowsBuildInstance.PublicIp} -Credential (Get-Credential) -Port 5985'
     
-  # WorkspaceLocation:
-  #   Description: Workspace directory on the instance
-  #   Value: 'C:\workspace'
+  PowerShellRemoteHTTPSConnectionInfo:
+    Description: PowerShell Remote HTTPS connection command (if HTTPS is configured)
+    Value: !Sub 'Enter-PSSession -ComputerName ${WindowsBuildInstance.PublicIp} -Credential (Get-Credential) -Port 5986 -UseSSL'
     
-  # ECREndpoint:
-  #   Description: ECR endpoint for this account and region
-  #   Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+  WinRMTestCommand:
+    Description: Command to test WinRM connectivity
+    Value: !Sub 'Test-WSMan -ComputerName ${WindowsBuildInstance.PublicIp} -Port 5985'
+    
+  WorkspaceLocation:
+    Description: Workspace directory on the instance
+    Value: 'C:\workspace'
+    
+  ECREndpoint:
+    Description: ECR endpoint for this account and region
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'

@@ -327,19 +327,19 @@ Outputs:
       
   InstancePublicIP:
     Description: Public IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PublicIp
+    Value: !GetAtt WindowsBuildInstance.PublicIpAddress
     Export:
       Name: !Sub '${AWS::StackName}-PublicIP'
       
   InstancePrivateIP:
     Description: Private IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PrivateIp
+    Value: !GetAtt WindowsBuildInstance.PrivateIpAddress
     Export:
       Name: !Sub '${AWS::StackName}-PrivateIP'
       
   RDPConnectionString:
     Description: RDP connection information
-    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
+    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIpAddress}:3389'
     
   WorkspaceLocation:
     Description: Workspace directory on the instance

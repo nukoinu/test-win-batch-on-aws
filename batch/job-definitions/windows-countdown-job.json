@@ -1,0 +1,51 @@
+{
+  "jobDefinitionName": "windows-countdown-job",
+  "type": "container",
+  "platformCapabilities": [
+    "EC2"
+  ],
+  "containerProperties": {
+    "image": "mcr.microsoft.com/windows/servercore:ltsc2019",
+    "vcpus": 1,
+    "memory": 512,
+    "jobRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/BatchJobRole",
+    "environment": [
+      {
+        "name": "TEST_MODE",
+        "value": "CONCURRENT"
+      }
+    ],
+    "mountPoints": [],
+    "volumes": [],
+    "ulimits": [],
+    "command": [
+      "powershell.exe",
+      "-Command",
+      "C:\\test\\countdown.exe $(Ref::countdownSeconds)"
+    ],
+    "linuxParameters": null,
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/windows-jobs",
+        "awslogs-region": "us-west-2"
+      }
+    },
+    "secrets": [],
+    "repositoryCredentials": null,
+    "resourceRequirements": []
+  },
+  "parameters": {
+    "countdownSeconds": "30"
+  },
+  "retryStrategy": {
+    "attempts": 1
+  },
+  "timeout": {
+    "attemptDurationSeconds": 600
+  },
+  "tags": {
+    "Project": "WindowsBatchTest",
+    "TestType": "ConcurrentExecution"
+  }
+}

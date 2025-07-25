@@ -15,6 +15,7 @@
 - Windows コンテナでのEXE実行
 - ジョブキューとジョブ定義の設定
 - 実行時間とリソース使用量の測定
+- **多重度検証**: 複数ジョブの同時実行による性能への影響測定
 
 ### AWS Lambda
 - Wine を使用したLinux環境でのWindows EXE実行
@@ -28,6 +29,10 @@
 ├── batch/                    # AWS Batch 関連のリソース
 │   ├── deploy-build-ec2.sh  # Windows Build EC2 デプロイスクリプト
 │   ├── WINDOWS_BUILD_EC2_GUIDE.md # Build EC2 使用ガイド
+│   ├── CONCURRENCY_TEST_GUIDE.md  # 多重度検証ガイド
+│   ├── concurrent-job-launcher.py # 多重度検証スクリプト
+│   ├── analyze-test-results.py    # テスト結果分析ツール
+│   ├── run-concurrency-tests.sh   # 自動テストシナリオ
 │   ├── docker/              # Dockerfiles
 │   ├── job-definitions/     # ジョブ定義
 │   └── cloudformation/      # CloudFormation テンプレート
@@ -56,13 +61,15 @@
 
 ### AWS Batch での検証
 
-#### オプション1: ローカル環境でのビルド
+#### 基本的なジョブ実行検証
+
+##### オプション1: ローカル環境でのビルド
 1. Windows コンテナ用のECRリポジトリを作成
 2. Docker イメージをビルドしてECRにプッシュ
 3. ジョブ定義とジョブキューを作成
 4. ジョブを実行して結果を確認
 
-#### オプション2: Windows Build EC2 を使用したビルド
+##### オプション2: Windows Build EC2 を使用したビルド
 1. Windows Build EC2 インスタンスをデプロイ
    ```bash
    cd batch
@@ -77,6 +84,56 @@
    ```
 4. ジョブ定義とジョブキューを作成
 5. ジョブを実行して結果を確認
+
+#### 多重度検証テスト
+
+複数のBatchジョブを同時起動して性能への影響を測定：
+
+**Linux/macOS:**
+```bash
+cd batch
+
+# セットアップ（仮想環境作成・依存関係インストール）
+./setup.sh
+
+# ジョブ定義の作成
+./create-job-definition.sh
+
+# 多重度テストの実行（5個のジョブを同時起動）
+python3 concurrent-job-launcher.py \
+  --job-queue YOUR_JOB_QUEUE \
+  --job-definition windows-countdown-job \
+  --num-jobs 5 \
+  --countdown 30 \
+  --monitor
+
+# 自動テストシナリオ（段階的多重度テスト）
+export JOB_QUEUE=your-windows-batch-queue
+./run-concurrency-tests.sh
+
+# 結果分析
+python3 analyze-test-results.py test-results/
+```
+
+**Windows (PowerShell):**
+```powershell
+cd batch
+
+# セットアップ（仮想環境作成・依存関係インストール）
+.\setup.ps1
+
+# クイックスタート
+.\quickstart.ps1 -JobQueue "YOUR_JOB_QUEUE" -JobDefinition "windows-countdown-job"
+
+# 自動テストシナリオ（段階的多重度テスト）
+$env:JOB_QUEUE = "your-windows-batch-queue"
+.\run-concurrency-tests.ps1
+
+# 結果分析
+python analyze-test-results.py test-results\
+```
+
+詳細は [CONCURRENCY_TEST_GUIDE.md](batch/CONCURRENCY_TEST_GUIDE.md) を参照してください。
 
 ### AWS Lambda での検証
 1. Wine を含むLambda Layerを作成

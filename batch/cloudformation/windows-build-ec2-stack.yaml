@@ -327,7 +327,7 @@ Outputs:
       
   InstancePublicIP:
     Description: Public IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PublicIpAddress
+    Value: !GetAtt WindowsBuildInstance.PublicIp
     Export:
       Name: !Sub '${AWS::StackName}-PublicIP'
       
@@ -335,7 +335,7 @@ Outputs:
     Description: Private IP address of the Windows build server
     Value: !GetAtt WindowsBuildInstance.PrivateIpAddress
     Export:
-      Name: !Sub '${AWS::StackName}-PrivateIP'
+      Name: !Sub '${AWS::StackName}-PrivateIp'
       
   RDPConnectionString:
     Description: RDP connection information

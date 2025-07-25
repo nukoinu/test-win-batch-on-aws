@@ -339,7 +339,7 @@ Outputs:
       
   RDPConnectionString:
     Description: RDP connection information
-    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIpAddress}:3389'
+    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIP}:3389'
     
   WorkspaceLocation:
     Description: Workspace directory on the instance

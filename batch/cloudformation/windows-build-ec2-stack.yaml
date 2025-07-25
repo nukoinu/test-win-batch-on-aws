@@ -333,7 +333,7 @@ Outputs:
       
   InstancePrivateIP:
     Description: Private IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PrivateIpAddress
+    Value: !GetAtt WindowsBuildInstance.PrivateIp
     Export:
       Name: !Sub '${AWS::StackName}-PrivateIp'
       

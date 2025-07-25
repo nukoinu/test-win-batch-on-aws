@@ -1,0 +1,289 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Windows ECS Cluster for EXE execution testing'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the ECS cluster
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for the ECS cluster (minimum 2)
+  
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for Windows instances
+  
+  InstanceType:
+    Type: String
+    Default: m5.large
+    Description: EC2 instance type for Windows ECS nodes
+    AllowedValues:
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - c5.large
+      - c5.xlarge
+
+Resources:
+  # ECS Cluster
+  WindowsECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: windows-countdown-cluster
+      CapacityProviders:
+        - EC2
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: EC2
+          Weight: 1
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  # IAM Role for ECS Instances
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: /
+
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ECSInstanceRole
+
+  # Security Group for ECS Instances
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows ECS instances
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0
+          Description: RDP access
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+          Description: HTTP for ECS agent
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS for Docker Hub, ECR
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+
+  # Launch Template for Windows ECS Instances
+  WindowsECSLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: windows-ecs-launch-template
+      LaunchTemplateData:
+        ImageId: ami-0c2b0d3fb02824d92  # Windows Server 2022 ECS-Optimized AMI (us-east-1)
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyPairName
+        IamInstanceProfile:
+          Arn: !GetAtt ECSInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref ECSSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            <powershell>
+            # ECS Cluster設定
+            [Environment]::SetEnvironmentVariable("ECS_CLUSTER", "${WindowsECSCluster}", "Machine")
+            
+            # Docker設定
+            & "C:\Program Files\Amazon\ECS\ecs-init.exe" -cluster "${WindowsECSCluster}" -region "${AWS::Region}"
+            
+            # CloudWatch Logs Agent設定
+            $config = @'
+            {
+              "logs": {
+                "logs_collected": {
+                  "windows_events": {
+                    "collect_list": [
+                      {
+                        "event_name": "System",
+                        "event_levels": ["ERROR", "WARNING"],
+                        "log_group_name": "/aws/ec2/windows/system",
+                        "log_stream_name": "{instance_id}/system"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            '@
+            $config | Out-File -FilePath "C:\ProgramData\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent.json"
+            
+            # CloudWatch Agent起動
+            & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\ProgramData\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent.json" -s
+            
+            # ECS Agent再起動
+            Restart-Service AmazonECS
+            </powershell>
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: WindowsECSInstance
+              - Key: Cluster
+                Value: !Ref WindowsECSCluster
+
+  # Auto Scaling Group
+  WindowsECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: windows-ecs-asg
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WindowsECSLaunchTemplate
+        Version: !GetAtt WindowsECSLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 10
+      DesiredCapacity: 2
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 600
+      Tags:
+        - Key: Name
+          Value: WindowsECSInstance
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: Test
+          PropagateAtLaunch: true
+
+  # ECS Task Execution Role
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Path: /
+
+  # CloudWatch Log Group
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/windows-countdown
+      RetentionInDays: 7
+
+  # ECR Repository
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: windows-countdown-app
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # ECS Task Definition
+  WindowsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: windows-countdown-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - EC2
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      Cpu: 1024
+      Memory: 2048
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: WINDOWS_SERVER_2022_CORE
+      ContainerDefinitions:
+        - Name: countdown-container
+          Image: !Sub "${ECRRepository.RepositoryUri}:latest"
+          Command:
+            - "countdown.exe"
+            - "30"
+          Essential: true
+          Memory: 1024
+          Cpu: 512
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # ECS Service
+  WindowsECSService:
+    Type: AWS::ECS::Service
+    DependsOn: WindowsECSAutoScalingGroup
+    Properties:
+      ServiceName: windows-countdown-service
+      Cluster: !Ref WindowsECSCluster
+      TaskDefinition: !Ref WindowsTaskDefinition
+      DesiredCount: 0  # 手動でテスト時に起動
+      LaunchType: EC2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref WindowsECSCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterName"
+
+  ECRRepositoryURI:
+    Description: URI of the ECR repository
+    Value: !GetAtt ECRRepository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-ECRRepositoryURI"
+
+  TaskDefinitionArn:
+    Description: ARN of the task definition
+    Value: !Ref WindowsTaskDefinition
+    Export:
+      Name: !Sub "${AWS::StackName}-TaskDefinitionArn"
+
+  ServiceName:
+    Description: Name of the ECS service
+    Value: !Ref WindowsECSService
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceName"

@@ -1,0 +1,11 @@
+# Windows Server Core 2022 ベース
+FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
+
+# 作業ディレクトリを設定
+WORKDIR C:\\app
+
+# ビルド済みのWindows EXEをコピー
+COPY countdown.exe C:\\app\\countdown.exe
+
+# デフォルトコマンド
+CMD ["countdown.exe", "10"]

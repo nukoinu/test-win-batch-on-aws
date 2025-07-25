@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Batch environment for Windows container jobs'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the Batch compute environment
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for the Batch compute environment
+  
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for Windows instances
+  
+  InstanceType:
+    Type: String
+    Default: m5.large
+    Description: EC2 instance type for Batch compute nodes
+    AllowedValues:
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - c5.large
+      - c5.xlarge
+
+Resources:
+  # IAM Role for Batch Service
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+      Path: /
+
+  # IAM Role for EC2 Instance (Batch Compute Environment)
+  BatchInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: /
+
+  BatchInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BatchInstanceRole
+
+  # Security Group for Batch Instances
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows Batch instances
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 10.0.0.0/8
+          Description: RDP access from VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+
+  # Batch Compute Environment
+  WindowsBatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      ComputeEnvironmentName: windows-batch-compute-env
+      Type: MANAGED
+      State: ENABLED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeResources:
+        Type: EC2
+        MinvCpus: 0
+        MaxvCpus: 256
+        DesiredvCpus: 0
+        InstanceTypes:
+          - !Ref InstanceType
+        ImageId: ami-0c2b0d3fb02824d92  # Windows Server 2022 ECS-Optimized AMI
+        Subnets: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+        InstanceRole: !GetAtt BatchInstanceProfile.Arn
+        Ec2KeyPair: !Ref KeyPairName
+        UserData: !Base64 |
+          <powershell>
+          # ECS Agent設定
+          [Environment]::SetEnvironmentVariable("ECS_ENABLE_CONTAINER_METADATA", "true", "Machine")
+          [Environment]::SetEnvironmentVariable("ECS_ENABLE_SPOT_INSTANCE_DRAINING", "false", "Machine")
+          
+          # CloudWatch Logs Agent設定
+          $config = @'
+          {
+            "logs": {
+              "logs_collected": {
+                "windows_events": {
+                  "collect_list": [
+                    {
+                      "event_name": "Application",
+                      "event_levels": ["ERROR", "WARNING", "INFORMATION"],
+                      "log_group_name": "/aws/batch/windows/application",
+                      "log_stream_name": "{instance_id}/application"
+                    },
+                    {
+                      "event_name": "System",
+                      "event_levels": ["ERROR", "WARNING"],
+                      "log_group_name": "/aws/batch/windows/system",
+                      "log_stream_name": "{instance_id}/system"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          '@
+          $config | Out-File -FilePath "C:\ProgramData\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent.json"
+          
+          # CloudWatch Agent起動
+          & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\ProgramData\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent.json" -s
+          </powershell>
+        Tags:
+          Environment: Test
+          Project: WindowsBatchTest
+
+  # Batch Job Queue
+  WindowsBatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: windows-batch-queue
+      State: ENABLED
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref WindowsBatchComputeEnvironment
+
+  # CloudWatch Log Groups
+  BatchApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/batch/windows/application
+      RetentionInDays: 7
+
+  BatchSystemLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/batch/windows/system
+      RetentionInDays: 7
+
+  BatchJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/batch/job
+      RetentionInDays: 14
+
+  # ECR Repository
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: windows-countdown-batch
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # IAM Role for Batch Job Execution
+  BatchJobExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Path: /
+
+  # Batch Job Definition
+  WindowsBatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: windows-countdown-job
+      Type: container
+      PlatformCapabilities:
+        - EC2
+      ContainerProperties:
+        Image: !Sub "${ECRRepository.RepositoryUri}:latest"
+        Vcpus: 1
+        Memory: 2048
+        JobRoleArn: !GetAtt BatchJobExecutionRole.Arn
+        ExecutionRoleArn: !GetAtt BatchJobExecutionRole.Arn
+        RuntimePlatform:
+          CpuArchitecture: X86_64
+          OperatingSystemFamily: WINDOWS_SERVER_2022_CORE
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref BatchJobLogGroup
+            awslogs-region: !Ref AWS::Region
+        Environment:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+      RetryStrategy:
+        Attempts: 1
+      Timeout:
+        AttemptDurationSeconds: 3600
+
+Outputs:
+  ComputeEnvironmentName:
+    Description: Name of the Batch compute environment
+    Value: !Ref WindowsBatchComputeEnvironment
+    Export:
+      Name: !Sub "${AWS::StackName}-ComputeEnvironmentName"
+
+  JobQueueName:
+    Description: Name of the Batch job queue
+    Value: !Ref WindowsBatchJobQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-JobQueueName"
+
+  JobDefinitionArn:
+    Description: ARN of the Batch job definition
+    Value: !Ref WindowsBatchJobDefinition
+    Export:
+      Name: !Sub "${AWS::StackName}-JobDefinitionArn"
+
+  ECRRepositoryURI:
+    Description: URI of the ECR repository
+    Value: !GetAtt ECRRepository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-ECRRepositoryURI"

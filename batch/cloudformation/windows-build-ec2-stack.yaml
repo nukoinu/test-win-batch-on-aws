@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Windows EC2 instance for building and deploying Windows containers when local Docker is not available'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the EC2 instance
+    
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID for the EC2 instance (should be public subnet for internet access)
+    
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for Windows instance access
+    
+  InstanceType:
+    Type: String
+    Default: t3.large
+    Description: EC2 instance type for build machine
+    AllowedValues:
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      
+  AllowedCIDR:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR block allowed to access the instance via RDP (recommend restricting to your IP)
+    
+  VolumeSize:
+    Type: Number
+    Default: 100
+    Description: EBS volume size in GB for the instance
+    MinValue: 50
+    MaxValue: 500
+
+Resources:
+  # Security Group for Windows Build Instance
+  WindowsBuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows build EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: !Ref AllowedCIDR
+          Description: RDP access
+        - IpProtocol: tcp
+          FromPort: 5985
+          ToPort: 5985
+          CidrIp: !Ref AllowedCIDR
+          Description: WinRM HTTP
+        - IpProtocol: tcp
+          FromPort: 5986
+          ToPort: 5986
+          CidrIp: !Ref AllowedCIDR
+          Description: WinRM HTTPS
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-windows-build-sg'
+
+  # IAM Role for Windows Build Instance
+  WindowsBuildInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:CreateRepository
+                  - ecr:DescribeRepositories
+                Resource: '*'
+        - PolicyName: BatchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - batch:*
+                  - ecs:*
+                  - iam:GetRole
+                  - iam:PassRole
+                  - logs:*
+                Resource: '*'
+        - PolicyName: CloudFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - ec2:*
+                  - iam:*
+                Resource: '*'
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-windows-build-role'
+
+  # Instance Profile
+  WindowsBuildInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref WindowsBuildInstanceRole
+
+  # Windows Build EC2 Instance
+  WindowsBuildInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-ContainersLatest}}'
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref WindowsBuildSecurityGroup
+      IamInstanceProfile: !Ref WindowsBuildInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          # Set execution policy
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          
+          # Install Chocolatey
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          
+          # Refresh environment variables
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          # Install required tools
+          choco install -y git
+          choco install -y awscli
+          choco install -y docker-desktop
+          choco install -y vscode
+          choco install -y 7zip
+          choco install -y notepadplusplus
+          
+          # Install .NET Framework (if needed for builds)
+          choco install -y dotnetfx
+          
+          # Install Visual Studio Build Tools (for C++ compilation)
+          choco install -y visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools"
+          
+          # Configure Docker to start automatically
+          Start-Service docker
+          Set-Service -Name docker -StartupType Automatic
+          
+          # Add current user to docker-users group
+          $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name.Split('\')[1]
+          Add-LocalGroupMember -Group "docker-users" -Member $currentUser
+          
+          # Create workspace directory
+          New-Item -ItemType Directory -Path "C:\workspace" -Force
+          
+          # Configure Git (you may want to update these)
+          git config --global user.name "Build Server"
+          git config --global user.email "build@example.com"
+          
+          # Configure AWS CLI region
+          aws configure set default.region ${AWS::Region}
+          
+          # Enable Windows Container mode for Docker
+          & "C:\Program Files\Docker\Docker\DockerCli.exe" -SwitchDaemon
+          
+          # Create a script for ECR login
+          $ecrLoginScript = @"
+          # ECR Login Script
+          `$region = "${AWS::Region}"
+          `$accountId = (aws sts get-caller-identity --query Account --output text)
+          `$ecrEndpoint = "`$accountId.dkr.ecr.`$region.amazonaws.com"
+          aws ecr get-login-password --region `$region | docker login --username AWS --password-stdin `$ecrEndpoint
+          Write-Host "Logged in to ECR: `$ecrEndpoint"
+          "@
+          Set-Content -Path "C:\workspace\ecr-login.ps1" -Value $ecrLoginScript
+          
+          # Create a build script template
+          $buildScript = @"
+          # Windows Container Build and Deploy Script
+          param(
+              [Parameter(Mandatory=`$true)]
+              [string]`$RepositoryName,
+              [string]`$ImageTag = "latest",
+              [string]`$DockerfilePath = ".\Dockerfile.windows-native"
+          )
+          
+          `$region = "${AWS::Region}"
+          `$accountId = (aws sts get-caller-identity --query Account --output text)
+          `$ecrEndpoint = "`$accountId.dkr.ecr.`$region.amazonaws.com"
+          `$fullImageName = "`$ecrEndpoint/`$RepositoryName:`$ImageTag"
+          
+          Write-Host "Building image: `$fullImageName"
+          
+          # Build the Docker image
+          docker build -t `$RepositoryName -f `$DockerfilePath .
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Error "Docker build failed"
+              exit 1
+          }
+          
+          # Tag the image
+          docker tag `$RepositoryName `$fullImageName
+          
+          # Login to ECR
+          & "C:\workspace\ecr-login.ps1"
+          
+          # Create ECR repository if it doesn't exist
+          aws ecr describe-repositories --repository-names `$RepositoryName --region `$region 2>$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Creating ECR repository: `$RepositoryName"
+              aws ecr create-repository --repository-name `$RepositoryName --region `$region
+          }
+          
+          # Push the image
+          Write-Host "Pushing image to ECR..."
+          docker push `$fullImageName
+          
+          if (`$LASTEXITCODE -eq 0) {
+              Write-Host "Successfully pushed `$fullImageName"
+          } else {
+              Write-Error "Failed to push image"
+              exit 1
+          }
+          "@
+          Set-Content -Path "C:\workspace\build-and-deploy.ps1" -Value $buildScript
+          
+          # Create README for the workspace
+          $readme = @"
+          # Windows Build Server
+          
+          This Windows EC2 instance is configured for building and deploying Windows containers.
+          
+          ## Installed Tools
+          - Docker Desktop (Windows containers mode)
+          - Git
+          - AWS CLI
+          - Visual Studio Code
+          - Visual Studio Build Tools
+          - 7-Zip
+          - Notepad++
+          
+          ## Usage
+          
+          1. Clone your repository to C:\workspace
+          2. Use the build-and-deploy.ps1 script to build and push Docker images:
+             ```powershell
+             cd C:\workspace\your-project
+             C:\workspace\build-and-deploy.ps1 -RepositoryName "your-repo-name" -ImageTag "v1.0"
+             ```
+          
+          3. Use ecr-login.ps1 to manually login to ECR if needed:
+             ```powershell
+             C:\workspace\ecr-login.ps1
+             ```
+          
+          ## ECR Repository
+          Account ID: ${AWS::AccountId}
+          Region: ${AWS::Region}
+          ECR Endpoint: ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          
+          ## Notes
+          - Docker is configured for Windows containers mode
+          - Current user is added to docker-users group
+          - AWS CLI is configured with instance role permissions
+          "@
+          Set-Content -Path "C:\workspace\README.md" -Value $readme
+          
+          # Signal completion
+          Write-Host "Windows build server setup completed successfully"
+          
+          # Restart to ensure all group memberships take effect
+          Restart-Computer -Force
+          </powershell>
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-windows-build-instance'
+        - Key: Purpose
+          Value: WindowsContainerBuild
+
+Outputs:
+  InstanceId:
+    Description: Instance ID of the Windows build server
+    Value: !Ref WindowsBuildInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+      
+  InstancePublicIP:
+    Description: Public IP address of the Windows build server
+    Value: !GetAtt WindowsBuildInstance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+      
+  InstancePrivateIP:
+    Description: Private IP address of the Windows build server
+    Value: !GetAtt WindowsBuildInstance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateIP'
+      
+  RDPConnectionString:
+    Description: RDP connection information
+    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
+    
+  WorkspaceLocation:
+    Description: Workspace directory on the instance
+    Value: 'C:\workspace'
+    
+  ECREndpoint:
+    Description: ECR endpoint for this account and region
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'

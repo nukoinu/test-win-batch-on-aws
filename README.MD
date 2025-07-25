@@ -26,9 +26,14 @@
 ```
 ├── README.MD                 # このファイル
 ├── batch/                    # AWS Batch 関連のリソース
+│   ├── deploy-build-ec2.sh  # Windows Build EC2 デプロイスクリプト
+│   ├── WINDOWS_BUILD_EC2_GUIDE.md # Build EC2 使用ガイド
 │   ├── docker/              # Dockerfiles
 │   ├── job-definitions/     # ジョブ定義
 │   └── cloudformation/      # CloudFormation テンプレート
+│       ├── windows-batch-stack.yaml    # AWS Batch スタック
+│       ├── windows-ecs-stack.yaml      # ECS スタック
+│       └── windows-build-ec2-stack.yaml # Build EC2 スタック
 ├── lambda/                   # AWS Lambda 関連のリソース
 │   ├── functions/           # Lambda 関数
 │   ├── layers/              # Lambda Layer（Wine等）
@@ -41,27 +46,56 @@
 
 ### 前提条件
 - AWS CLI が設定済みであること
-- Docker がインストール済みであること
 - 適切なAWS権限が設定されていること
 
+#### ローカル環境でDockerが使用可能な場合
+- Docker がインストール済みであること
+
+#### ローカル環境でDockerが使用不可の場合（制限環境）
+- Windows Build EC2 インスタンスを使用（詳細は [WINDOWS_BUILD_EC2_GUIDE.md](batch/WINDOWS_BUILD_EC2_GUIDE.md) を参照）
+
 ### AWS Batch での検証
+
+#### オプション1: ローカル環境でのビルド
 1. Windows コンテナ用のECRリポジトリを作成
 2. Docker イメージをビルドしてECRにプッシュ
 3. ジョブ定義とジョブキューを作成
 4. ジョブを実行して結果を確認
+
+#### オプション2: Windows Build EC2 を使用したビルド
+1. Windows Build EC2 インスタンスをデプロイ
+   ```bash
+   cd batch
+   ./deploy-build-ec2.sh
+   ```
+2. EC2インスタンスにRDP接続
+3. プロジェクトをクローンしてビルド・デプロイ
+   ```powershell
+   cd C:\workspace
+   git clone <your-repository>
+   C:\workspace\build-and-deploy.ps1 -RepositoryName "your-app" -ImageTag "v1.0"
+   ```
+4. ジョブ定義とジョブキューを作成
+5. ジョブを実行して結果を確認
 
 ### AWS Lambda での検証
 1. Wine を含むLambda Layerを作成
 2. Windows EXE を実行するLambda関数をデプロイ
 3. 関数を実行して結果を確認
 
-## 制約事項
+## 制約事項と解決策
 
-### AWS Batch
+### ローカル環境の制約
+- **Docker インストール制限**: 企業ポリシーによりローカルPCにDockerがインストールできない
+  - **解決策**: Windows Build EC2 インスタンスを使用してクラウド上でビルド
+- **ローカルマシンのスペック不足**: 大きなWindowsコンテナイメージのビルドが困難
+  - **解決策**: 高性能なEC2インスタンス（c5.xlarge等）を使用
+
+### AWS Batch の制約
 - Windows コンテナは Linux コンテナよりもリソース使用量が多い
 - 起動時間が長い可能性がある
 
-### AWS Lambda
+### AWS Lambda の制約
 - Wine の互換性に依存
 - Lambda の実行時間制限（15分）
 - メモリ制限の制約

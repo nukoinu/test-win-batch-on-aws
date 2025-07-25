@@ -96,6 +96,41 @@ setup_key_pair() {
     fi
 }
 
+# Function to confirm deployment
+confirm_deployment() {
+    echo ""
+    echo "======================================"
+    echo "Deployment Configuration Summary"
+    echo "======================================"
+    echo "Stack Name:       $STACK_NAME"
+    echo "Region:           $REGION"
+    echo "VPC ID:           $VPC_ID"
+    echo "Subnet ID:        $SUBNET_ID"
+    echo "Key Pair:         $KEY_PAIR_NAME"
+    echo "Instance Type:    t3.large"
+    echo "Volume Size:      100 GB"
+    echo "Template:         $TEMPLATE_FILE"
+    echo "======================================"
+    echo ""
+    
+    while true; do
+        read -p "Do you want to proceed with this deployment? (Y/N): " CONFIRM
+        case $CONFIRM in
+            [Yy]|[Yy][Ee][Ss])
+                print_status "Proceeding with deployment..."
+                break
+                ;;
+            [Nn]|[Nn][Oo])
+                print_warning "Deployment cancelled by user."
+                exit 0
+                ;;
+            *)
+                echo "Please answer Y (yes) or N (no)."
+                ;;
+        esac
+    done
+}
+
 # Function to deploy CloudFormation stack
 deploy_stack() {
     print_status "Deploying CloudFormation stack: $STACK_NAME"
@@ -182,6 +217,7 @@ show_help() {
     echo "Examples:"
     echo "  $0                                    # Deploy with default settings"
     echo "  $0 -s my-build-server -r us-west-2   # Deploy with custom name and region"
+    echo "  $0 --vpc-id vpc-12345                # Deploy with specific VPC (auto-detect subnet)"
     echo "  $0 --vpc-id vpc-12345 --subnet-id subnet-67890  # Deploy with specific network"
 }
 
@@ -229,11 +265,27 @@ main() {
     check_prerequisites
     
     # Get network information if not provided
-    if [ -z "$VPC_ID" ] || [ -z "$SUBNET_ID" ]; then
+    if [ -z "$VPC_ID" ]; then
         get_network_info
+    else
+        print_status "Using specified VPC: $VPC_ID"
+        # If VPC is specified but subnet is not, get subnet from the specified VPC
+        if [ -z "$SUBNET_ID" ]; then
+            print_status "Getting subnet information for VPC: $VPC_ID"
+            SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" "Name=default-for-az,Values=true" --query 'Subnets[0].SubnetId' --output text --region $REGION)
+            
+            if [ "$SUBNET_ID" = "None" ] || [ -z "$SUBNET_ID" ]; then
+                print_error "No suitable public subnet found in VPC $VPC_ID. Please specify SUBNET_ID manually."
+                exit 1
+            fi
+            print_status "Found Subnet: $SUBNET_ID"
+        else
+            print_status "Using specified Subnet: $SUBNET_ID"
+        fi
     fi
     
     setup_key_pair
+    confirm_deployment
     deploy_stack
     get_stack_outputs
     

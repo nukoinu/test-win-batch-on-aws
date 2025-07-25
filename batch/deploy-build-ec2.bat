@@ -108,6 +108,35 @@ if errorlevel 1 (
 )
 goto :eof
 
+:confirm_deployment
+echo.
+echo ======================================
+echo Deployment Configuration Summary
+echo ======================================
+echo Stack Name:       %STACK_NAME%
+echo Region:           %REGION%
+echo VPC ID:           %VPC_ID%
+echo Subnet ID:        %SUBNET_ID%
+echo Key Pair:         %KEY_PAIR_NAME%
+echo Instance Type:    %INSTANCE_TYPE%
+echo Volume Size:      %VOLUME_SIZE% GB
+echo Template:         %TEMPLATE_FILE%
+echo ======================================
+echo.
+set /p "CONFIRM=Do you want to proceed with this deployment? (Y/N): "
+
+if /i "%CONFIRM%"=="Y" (
+    call :print_status "Proceeding with deployment..."
+    goto :eof
+)
+if /i "%CONFIRM%"=="Yes" (
+    call :print_status "Proceeding with deployment..."
+    goto :eof
+)
+
+call :print_warning "Deployment cancelled by user."
+exit /b 0
+
 :deploy_stack
 call :print_status "Deploying CloudFormation stack: %STACK_NAME%"
 
@@ -197,6 +226,7 @@ echo.
 echo Examples:
 echo   %~nx0                                    # Deploy with default settings
 echo   %~nx0 -s my-build-server -r us-west-2   # Deploy with custom name and region
+echo   %~nx0 --vpc-id vpc-12345                # Deploy with specific VPC (auto-detect subnet)
 echo   %~nx0 --vpc-id vpc-12345 --subnet-id subnet-67890  # Deploy with specific network
 echo   %~nx0 --instance-type t3.xlarge --volume-size 200   # Deploy with larger specs
 goto :eof
@@ -303,13 +333,31 @@ REM Get network information if not provided
 if "%VPC_ID%"=="" (
     call :get_network_info
     if errorlevel 1 exit /b 1
-)
-if "%SUBNET_ID%"=="" (
-    call :get_network_info
-    if errorlevel 1 exit /b 1
+) else (
+    call :print_status "Using specified VPC: %VPC_ID%"
+    REM If VPC is specified but subnet is not, get subnet from the specified VPC
+    if "%SUBNET_ID%"=="" (
+        call :print_status "Getting subnet information for VPC: %VPC_ID%"
+        for /f "tokens=*" %%i in ('aws ec2 describe-subnets --filters "Name=vpc-id,Values=%VPC_ID%" "Name=default-for-az,Values=true" --query "Subnets[0].SubnetId" --output text --region %REGION% 2^>nul') do set "SUBNET_ID=%%i"
+        
+        if "%SUBNET_ID%"=="None" (
+            call :print_error "No suitable public subnet found in VPC %VPC_ID%. Please specify SUBNET_ID manually."
+            exit /b 1
+        )
+        if "%SUBNET_ID%"=="" (
+            call :print_error "No suitable public subnet found in VPC %VPC_ID%. Please specify SUBNET_ID manually."
+            exit /b 1
+        )
+        call :print_status "Found Subnet: %SUBNET_ID%"
+    ) else (
+        call :print_status "Using specified Subnet: %SUBNET_ID%"
+    )
 )
 
 call :setup_key_pair
+if errorlevel 1 exit /b 1
+
+call :confirm_deployment
 if errorlevel 1 exit /b 1
 
 call :deploy_stack

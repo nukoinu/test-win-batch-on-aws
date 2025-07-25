@@ -325,26 +325,26 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-InstanceId'
       
-  InstancePublicIP:
-    Description: Public IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PublicIp
-    Export:
-      Name: !Sub '${AWS::StackName}-PublicIP'
+  # InstancePublicIP:
+  #   Description: Public IP address of the Windows build server
+  #   Value: !GetAtt WindowsBuildInstance.PublicIp
+  #   Export:
+  #     Name: !Sub '${AWS::StackName}-PublicIP'
       
-  InstancePrivateIP:
-    Description: Private IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PrivateIp
-    Export:
-      Name: !Sub '${AWS::StackName}-PrivateIP'
+  # InstancePrivateIP:
+  #   Description: Private IP address of the Windows build server
+  #   Value: !GetAtt WindowsBuildInstance.PrivateIp
+  #   Export:
+  #     Name: !Sub '${AWS::StackName}-PrivateIP'
       
-  RDPConnectionString:
-    Description: RDP connection information
-    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
+  # RDPConnectionString:
+  #   Description: RDP connection information
+  #   Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
     
-  WorkspaceLocation:
-    Description: Workspace directory on the instance
-    Value: 'C:\workspace'
+  # WorkspaceLocation:
+  #   Description: Workspace directory on the instance
+  #   Value: 'C:\workspace'
     
-  ECREndpoint:
-    Description: ECR endpoint for this account and region
-    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+  # ECREndpoint:
+  #   Description: ECR endpoint for this account and region
+  #   Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'

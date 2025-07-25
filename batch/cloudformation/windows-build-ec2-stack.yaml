@@ -335,11 +335,11 @@ Outputs:
     Description: Private IP address of the Windows build server
     Value: !GetAtt WindowsBuildInstance.PrivateIp
     Export:
-      Name: !Sub '${AWS::StackName}-PrivateIp'
+      Name: !Sub '${AWS::StackName}-PrivateIP'
       
   RDPConnectionString:
     Description: RDP connection information
-    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIP}:3389'
+    Value: !Sub 'mstsc /v:${WindowsBuildInstance.PublicIp}:3389'
     
   WorkspaceLocation:
     Description: Workspace directory on the instance

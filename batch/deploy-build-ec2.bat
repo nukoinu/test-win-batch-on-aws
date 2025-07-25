@@ -135,7 +135,7 @@ if /i "%CONFIRM%"=="Yes" (
 )
 
 call :print_warning "Deployment cancelled by user."
-exit /b 0
+exit /b 2
 
 :deploy_stack
 call :print_status "Deploying CloudFormation stack: %STACK_NAME%"
@@ -358,6 +358,10 @@ call :setup_key_pair
 if errorlevel 1 exit /b 1
 
 call :confirm_deployment
+if errorlevel 2 (
+    call :print_warning "Deployment cancelled."
+    exit /b 0
+)
 if errorlevel 1 exit /b 1
 
 call :deploy_stack

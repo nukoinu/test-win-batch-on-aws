@@ -122,7 +122,7 @@ confirm_deployment() {
                 ;;
             [Nn]|[Nn][Oo])
                 print_warning "Deployment cancelled by user."
-                exit 0
+                exit 2
                 ;;
             *)
                 echo "Please answer Y (yes) or N (no)."

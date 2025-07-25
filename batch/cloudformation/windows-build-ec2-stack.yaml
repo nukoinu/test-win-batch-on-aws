@@ -142,7 +142,7 @@ Resources:
   WindowsBuildInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-ContainersLatest}}'
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base}}'
       InstanceType: !Ref InstanceType
       KeyName: !Ref KeyPairName
       SubnetId: !Ref SubnetId

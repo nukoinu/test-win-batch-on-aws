@@ -1,0 +1,374 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lambda functions for ECS Windows container execution'
+
+Parameters:
+  ECSClusterName:
+    Type: String
+    Default: windows-countdown-cluster
+    Description: Name of the ECS cluster
+  
+  TaskDefinitionArn:
+    Type: String
+    Description: ARN of the ECS task definition for Windows container
+  
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: Subnet IDs for ECS tasks
+  
+  SecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: Security Group IDs for ECS tasks
+  
+  LogGroupName:
+    Type: String
+    Default: /ecs/windows-countdown
+    Description: CloudWatch log group name for ECS tasks
+
+Resources:
+  # Lambda実行ロール
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ECSTaskExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                  - ecs:DescribeTasks
+                  - ecs:StopTask
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                Resource: 
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupName}*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+  # ECSタスク起動Lambda関数
+  ECSTaskLauncherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ecs-windows-task-launcher
+      Runtime: python3.9
+      Handler: ecs_task_launcher.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          ecs_client = boto3.client('ecs')
+          
+          def lambda_handler(event, context):
+              try:
+                  logger.info(f"Received event: {json.dumps(event)}")
+                  
+                  exe_args = event.get('exe_args', ['10'])
+                  cluster_name = event.get('cluster_name', os.environ.get('ECS_CLUSTER_NAME'))
+                  task_definition = event.get('task_definition', os.environ.get('TASK_DEFINITION_ARN'))
+                  subnet_ids = event.get('subnet_ids', os.environ.get('SUBNET_IDS').split(','))
+                  security_group_ids = event.get('security_group_ids', os.environ.get('SECURITY_GROUP_IDS').split(','))
+                  
+                  if not task_definition:
+                      raise ValueError("Task definition ARN is required")
+                  if not subnet_ids:
+                      raise ValueError("Subnet IDs are required")
+                  if not security_group_ids:
+                      raise ValueError("Security Group IDs are required")
+                  
+                  response = ecs_client.run_task(
+                      cluster=cluster_name,
+                      taskDefinition=task_definition,
+                      launchType='EC2',
+                      networkConfiguration={
+                          'awsvpcConfiguration': {
+                              'subnets': subnet_ids,
+                              'securityGroups': security_group_ids,
+                              'assignPublicIp': 'ENABLED'
+                          }
+                      },
+                      overrides={
+                          'containerOverrides': [
+                              {
+                                  'name': 'windows-countdown-container',
+                                  'command': ['C:\\app\\countdown.exe'] + exe_args
+                              }
+                          ]
+                      },
+                      count=1,
+                      tags=[
+                          {
+                              'key': 'LaunchedBy',
+                              'value': 'Lambda'
+                          }
+                      ]
+                  )
+                  
+                  if response['failures']:
+                      raise Exception(f"Failed to start ECS task: {response['failures']}")
+                  
+                  task_arn = response['tasks'][0]['taskArn']
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'ECS task started successfully',
+                          'taskArn': task_arn,
+                          'taskId': task_arn.split('/')[-1],
+                          'exe_args': exe_args
+                      })
+                  }
+                  
+              except Exception as e:
+                  logger.error(f"Error occurred: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': str(e)
+                      })
+                  }
+      Environment:
+        Variables:
+          ECS_CLUSTER_NAME: !Ref ECSClusterName
+          TASK_DEFINITION_ARN: !Ref TaskDefinitionArn
+          SUBNET_IDS: !Join [',', !Ref SubnetIds]
+          SECURITY_GROUP_IDS: !Join [',', !Ref SecurityGroupIds]
+          LOG_GROUP_NAME: !Ref LogGroupName
+      Timeout: 60
+      MemorySize: 256
+
+  # ECSタスク監視Lambda関数
+  ECSTaskMonitorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ecs-windows-task-monitor
+      Runtime: python3.9
+      Handler: ecs_task_monitor.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          ecs_client = boto3.client('ecs')
+          
+          def lambda_handler(event, context):
+              try:
+                  logger.info(f"Received event: {json.dumps(event)}")
+                  
+                  task_arn = event.get('task_arn')
+                  cluster_name = event.get('cluster_name', os.environ.get('ECS_CLUSTER_NAME'))
+                  
+                  if not task_arn:
+                      raise ValueError("task_arn is required")
+                  
+                  response = ecs_client.describe_tasks(
+                      cluster=cluster_name,
+                      tasks=[task_arn]
+                  )
+                  
+                  if not response['tasks']:
+                      raise Exception(f"Task not found: {task_arn}")
+                  
+                  task = response['tasks'][0]
+                  
+                  task_status = {
+                      'taskArn': task_arn,
+                      'lastStatus': task['lastStatus'],
+                      'desiredStatus': task['desiredStatus'],
+                      'createdAt': task['createdAt'].isoformat() if 'createdAt' in task else None,
+                      'startedAt': task['startedAt'].isoformat() if 'startedAt' in task else None,
+                      'stoppedAt': task['stoppedAt'].isoformat() if 'stoppedAt' in task else None,
+                      'stopCode': task.get('stopCode'),
+                      'stoppedReason': task.get('stoppedReason'),
+                      'containers': [
+                          {
+                              'name': container['name'],
+                              'lastStatus': container['lastStatus'],
+                              'exitCode': container.get('exitCode'),
+                              'reason': container.get('reason')
+                          }
+                          for container in task['containers']
+                      ]
+                  }
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'taskArn': task_arn,
+                          'status': task_status
+                      }, default=str)
+                  }
+                  
+              except Exception as e:
+                  logger.error(f"Error occurred: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': str(e)
+                      })
+                  }
+      Environment:
+        Variables:
+          ECS_CLUSTER_NAME: !Ref ECSClusterName
+      Timeout: 30
+      MemorySize: 256
+
+  # API Gateway for Lambda functions
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ecs-windows-executor-api
+      Description: API for executing Windows EXE files on ECS
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource for task execution
+  TaskExecutionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: execute
+
+  # API Gateway Method for task execution
+  TaskExecutionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref TaskExecutionResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ECSTaskLauncherFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+        - StatusCode: 500
+          ResponseModels:
+            application/json: Empty
+
+  # API Gateway Resource for task monitoring
+  TaskMonitorResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: status
+
+  # API Gateway Method for task monitoring
+  TaskMonitorMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref TaskMonitorResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ECSTaskMonitorFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+        - StatusCode: 500
+          ResponseModels:
+            application/json: Empty
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - TaskExecutionMethod
+      - TaskMonitorMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+
+  # Lambda Permission for API Gateway to invoke launcher function
+  LauncherLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ECSTaskLauncherFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ApiGateway}/*/POST/execute'
+
+  # Lambda Permission for API Gateway to invoke monitor function
+  MonitorLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ECSTaskMonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ApiGateway}/*/POST/status'
+
+Outputs:
+  ECSTaskLauncherFunctionArn:
+    Description: ARN of the ECS Task Launcher Lambda function
+    Value: !GetAtt ECSTaskLauncherFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LauncherFunctionArn'
+
+  ECSTaskMonitorFunctionArn:
+    Description: ARN of the ECS Task Monitor Lambda function
+    Value: !GetAtt ECSTaskMonitorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-MonitorFunctionArn'
+
+  ApiGatewayUrl:
+    Description: URL of the API Gateway
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayUrl'
+
+  TaskExecutionEndpoint:
+    Description: Endpoint for executing Windows EXE tasks
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/execute'
+    Export:
+      Name: !Sub '${AWS::StackName}-ExecutionEndpoint'
+
+  TaskMonitorEndpoint:
+    Description: Endpoint for monitoring task status
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/status'
+    Export:
+      Name: !Sub '${AWS::StackName}-MonitorEndpoint'

@@ -18,9 +18,10 @@
 - **多重度検証**: 複数ジョブの同時実行による性能への影響測定
 
 ### AWS Lambda
-- Wine を使用したLinux環境でのWindows EXE実行
-- Lambda Layer を使用したWineの配布
-- 実行制限時間内での処理可能性
+- LambdaからECS上のWindowsコンテナでEXE実行
+- API Gateway経由でのRESTful API提供
+- ECSタスクの起動・監視機能
+- CloudWatch Logsでの実行ログ収集
 
 ## リポジトリ構成
 
@@ -41,8 +42,19 @@
 │       └── windows-build-ec2-stack.yaml # Build EC2 スタック
 ├── lambda/                   # AWS Lambda 関連のリソース
 │   ├── functions/           # Lambda 関数
-│   ├── layers/              # Lambda Layer（Wine等）
-│   └── cloudformation/      # CloudFormation テンプレート
+│   │   ├── ecs_task_launcher.py    # ECSタスク起動関数
+│   │   └── ecs_task_monitor.py     # ECSタスク監視関数
+│   ├── cloudformation/      # CloudFormation テンプレート
+│   │   ├── lambda-ecs-stack.yaml   # Lambda + API Gateway スタック
+│   │   └── ecs-task-definition.yaml # ECSタスク定義
+│   ├── deploy-lambda-ecs.sh       # Linuxデプロイスクリプト
+│   ├── deploy-lambda-ecs.ps1      # PowerShellデプロイスクリプト
+│   ├── deploy-lambda-ecs.bat      # Batchデプロイスクリプト
+│   ├── test_lambda_ecs.py         # Pythonテストスクリプト
+│   ├── test_lambda_ecs.ps1        # PowerShellテストスクリプト
+│   ├── requirements.txt           # Python依存関係
+│   ├── LAMBDA_ECS_GUIDE.md        # Lambda-ECS実行ガイド
+│   └── WINDOWS_DEPLOYMENT_GUIDE.md # Windows環境でのデプロイガイド
 ├── test-executables/         # テスト用のWindows EXEファイル
 └── docs/                     # 検証結果やドキュメント
 ```
@@ -136,9 +148,13 @@ python analyze-test-results.py test-results\
 詳細は [CONCURRENCY_TEST_GUIDE.md](batch/CONCURRENCY_TEST_GUIDE.md) を参照してください。
 
 ### AWS Lambda での検証
-1. Wine を含むLambda Layerを作成
-2. Windows EXE を実行するLambda関数をデプロイ
-3. 関数を実行して結果を確認
+
+このリポジトリでは、AWS Lambda から ECS 上の Windows コンテナで EXE ファイルを起動するサンプルのみを提供します。Lambda 関数が API Gateway 経由でリクエストを受け取り、ECS タスクを起動して EXE を実行する流れを検証できます。
+
+- Lambda から ECS タスクを起動するサンプルコードとデプロイスクリプトを提供
+- Lambda から直接 Windows EXE を実行する検証は行いません
+
+詳細な手順やサンプルの使い方は [LAMBDA_ECS_GUIDE.md](lambda/LAMBDA_ECS_GUIDE.md) を参照してください。
 
 ## 制約事項と解決策
 

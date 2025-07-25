@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Task Definition for Windows container with countdown.exe'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the ECS task
+  
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the ECS task execution role
+  
+  TaskRoleArn:
+    Type: String
+    Description: ARN of the ECS task role
+  
+  ECRRepositoryUri:
+    Type: String
+    Description: URI of the ECR repository containing the Windows container image
+    Default: "mcr.microsoft.com/windows/servercore:ltsc2022"
+
+Resources:
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/windows-countdown
+      RetentionInDays: 7
+
+  # ECS Task Definition
+  WindowsCountdownTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: windows-countdown-task
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - EC2
+      Cpu: 1024
+      Memory: 2048
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      TaskRoleArn: !Ref TaskRoleArn
+      ContainerDefinitions:
+        - Name: windows-countdown-container
+          Image: !Ref ECRRepositoryUri
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          WorkingDirectory: "C:\\app"
+          EntryPoint:
+            - "powershell.exe"
+          Command:
+            - "-Command"
+            - "C:\\app\\countdown.exe 10"
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          Memory: 2048
+          Cpu: 1024
+
+Outputs:
+  TaskDefinitionArn:
+    Description: ARN of the ECS Task Definition
+    Value: !Ref WindowsCountdownTaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
+  
+  LogGroupName:
+    Description: Name of the CloudWatch Log Group
+    Value: !Ref LogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'

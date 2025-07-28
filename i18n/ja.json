@@ -1,0 +1,14 @@
+{
+  "usage": "使用法: %s <秒数>\n",
+  "example": "例: %s 10\n",
+  "error_positive": "エラー: 正の整数を指定してください\n",
+  "test_program_header": "=== Windows テストプログラム ===\n",
+  "start_time": "開始時刻: %04d-%02d-%02d %02d:%02d:%02d\n",
+  "process_id": "プロセスID: %lu\n",
+  "thread_id": "スレッドID: %lu\n",
+  "countdown_start": "カウントダウン開始: %d秒\n",
+  "separator": "-----------------------------\n",
+  "remaining_time": "残り時間: %d秒 (PID: %lu)\n",
+  "end_time": "終了時刻: %04d-%02d-%02d %02d:%02d:%02d\n",
+  "process_complete": "プロセス完了 (PID: %lu)\n"
+}

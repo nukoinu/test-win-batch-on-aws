@@ -1,0 +1,14 @@
+{
+  "usage": "Usage: %s <seconds>\n",
+  "example": "Example: %s 10\n",
+  "error_positive": "Error: Please specify a positive integer\n",
+  "test_program_header": "=== Windows Test Program ===\n",
+  "start_time": "Start time: %04d-%02d-%02d %02d:%02d:%02d\n",
+  "process_id": "Process ID: %lu\n",
+  "thread_id": "Thread ID: %lu\n",
+  "countdown_start": "Countdown started: %d seconds\n",
+  "separator": "-----------------------------\n",
+  "remaining_time": "Remaining time: %d seconds (PID: %lu)\n",
+  "end_time": "End time: %04d-%02d-%02d %02d:%02d:%02d\n",
+  "process_complete": "Process completed (PID: %lu)\n"
+}

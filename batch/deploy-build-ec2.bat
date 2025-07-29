@@ -91,23 +91,6 @@ call :print_status "Found VPC: %VPC_ID%"
 call :print_status "Found Subnet: %SUBNET_ID%"
 goto :eof
 
-:setup_key_pair
-set "KEY_PAIR_NAME=windows-build-key"
-
-call :print_status "Checking for key pair: %KEY_PAIR_NAME%"
-
-REM Check if key pair exists
-aws ec2 describe-key-pairs --key-names "%KEY_PAIR_NAME%" --region %REGION% >nul 2>&1
-if errorlevel 1 (
-    call :print_status "Creating new key pair: %KEY_PAIR_NAME%"
-    aws ec2 create-key-pair --key-name "%KEY_PAIR_NAME%" --region %REGION% --query "KeyMaterial" --output text > "%KEY_PAIR_NAME%.pem"
-    call :print_status "Key pair created and saved as %KEY_PAIR_NAME%.pem"
-    call :print_warning "Please keep the %KEY_PAIR_NAME%.pem file safe for RDP access."
-) else (
-    call :print_status "Key pair '%KEY_PAIR_NAME%' already exists."
-)
-goto :eof
-
 :confirm_deployment
 echo.
 echo ======================================
@@ -117,7 +100,7 @@ echo Stack Name:       %STACK_NAME%
 echo Region:           %REGION%
 echo VPC ID:           %VPC_ID%
 echo Subnet ID:        %SUBNET_ID%
-echo Key Pair:         %KEY_PAIR_NAME%
+echo Instance Role:    %INSTANCE_ROLE_ARN%
 echo Instance Type:    %INSTANCE_TYPE%
 echo Volume Size:      %VOLUME_SIZE% GB
 echo Template:         %TEMPLATE_FILE%
@@ -140,21 +123,6 @@ exit /b 2
 :deploy_stack
 call :print_status "Deploying CloudFormation stack: %STACK_NAME%"
 
-REM Get current public IP for security group
-set "CURRENT_IP="
-for /f "tokens=*" %%i in ('curl -s https://checkip.amazonaws.com 2^>nul') do set "CURRENT_IP=%%i"
-
-if "%CURRENT_IP%"=="" set "CURRENT_IP=0.0.0.0"
-
-if not "%CURRENT_IP%"=="0.0.0.0" (
-    set "ALLOWED_CIDR=%CURRENT_IP%/32"
-    call :print_status "Restricting RDP access to your current IP: !ALLOWED_CIDR!"
-) else (
-    set "ALLOWED_CIDR=0.0.0.0/0"
-    call :print_warning "Could not determine your public IP. Allowing RDP from anywhere (0.0.0.0/0)."
-    call :print_warning "Please update the security group after deployment for better security."
-)
-
 REM Deploy the stack
 aws cloudformation deploy ^
     --template-file "%TEMPLATE_FILE%" ^
@@ -162,8 +130,7 @@ aws cloudformation deploy ^
     --parameter-overrides ^
         VpcId="%VPC_ID%" ^
         SubnetId="%SUBNET_ID%" ^
-        KeyPairName="%KEY_PAIR_NAME%" ^
-        AllowedCIDR="%ALLOWED_CIDR%" ^
+        InstanceRoleArn="%INSTANCE_ROLE_ARN%" ^
         InstanceType="%INSTANCE_TYPE%" ^
         VolumeSize="%VOLUME_SIZE%" ^
     --capabilities CAPABILITY_IAM ^
@@ -181,31 +148,27 @@ goto :eof
 call :print_status "Getting stack outputs..."
 
 for /f "tokens=*" %%i in ('aws cloudformation describe-stacks --stack-name "%STACK_NAME%" --region %REGION% --query "Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue" --output text 2^>nul') do set "INSTANCE_ID=%%i"
-for /f "tokens=*" %%i in ('aws cloudformation describe-stacks --stack-name "%STACK_NAME%" --region %REGION% --query "Stacks[0].Outputs[?OutputKey==`InstancePublicIP`].OutputValue" --output text 2^>nul') do set "PUBLIC_IP=%%i"
-for /f "tokens=*" %%i in ('aws cloudformation describe-stacks --stack-name "%STACK_NAME%" --region %REGION% --query "Stacks[0].Outputs[?OutputKey==`ECREndpoint`].OutputValue" --output text 2^>nul') do set "ECR_ENDPOINT=%%i"
 
 echo.
 echo ======================================
 echo Windows Build Server Information
 echo ======================================
 echo Instance ID: %INSTANCE_ID%
-echo Public IP: %PUBLIC_IP%
-echo ECR Endpoint: %ECR_ENDPOINT%
-echo Key Pair: %KEY_PAIR_NAME%
 echo.
-echo RDP Connection:
-echo   Host: %PUBLIC_IP%
-echo   Port: 3389
-echo   Username: Administrator
-echo   Key File: %KEY_PAIR_NAME%.pem
+echo SSM Connection:
+echo   aws ssm start-session --target %INSTANCE_ID% --region %REGION%
 echo.
 echo Workspace Location: C:\workspace
 echo.
 echo Usage Instructions:
 echo 1. Wait for the instance to complete initialization (5-10 minutes)
-echo 2. Connect via RDP using the information above
-echo 3. Clone your repository to C:\workspace
-echo 4. Use C:\workspace\build-and-deploy.ps1 to build and push Docker images
+echo 2. Connect via SSM Session Manager using the command above
+echo 3. Once connected, run: powershell
+echo 4. Navigate to workspace: cd C:\workspace
+echo 5. Clone your repository to C:\workspace
+echo 6. Use C:\workspace\build-and-deploy.ps1 to build Docker images locally or push to ECR
+echo   - Local build: build-and-deploy.ps1 -RepositoryName "my-app" -ImageTag "v1.0"
+echo   - Build and push to ECR: build-and-deploy.ps1 -RepositoryName "my-app" -ImageTag "v1.0" -PushToECR
 echo.
 echo ======================================
 goto :eof
@@ -214,21 +177,23 @@ goto :eof
 echo Usage: %~nx0 [OPTIONS]
 echo.
 echo Options:
-echo   -h, --help        Show this help message
-echo   -s, --stack-name  Stack name (default: windows-build-ec2)
-echo   -r, --region      AWS region (default: ap-northeast-1)
-echo   --vpc-id          VPC ID (auto-detected if not specified)
-echo   --subnet-id       Subnet ID (auto-detected if not specified)
-echo   --key-pair        Key pair name (default: windows-build-key)
-echo   --instance-type   Instance type (default: t3.large)
-echo   --volume-size     EBS volume size in GB (default: 100)
+echo   -h, --help           Show this help message
+echo   -s, --stack-name     Stack name (default: windows-build-ec2)
+echo   -r, --region         AWS region (default: ap-northeast-1)
+echo   --vpc-id             VPC ID (auto-detected if not specified)
+echo   --subnet-id          Subnet ID (auto-detected if not specified)
+echo   --instance-role-arn  IAM role ARN for EC2 instance (required)
+echo   --instance-type      Instance type (default: t3.large)
+echo   --volume-size        EBS volume size in GB (default: 100)
 echo.
 echo Examples:
-echo   %~nx0                                    # Deploy with default settings
-echo   %~nx0 -s my-build-server -r us-west-2   # Deploy with custom name and region
-echo   %~nx0 --vpc-id vpc-12345                # Deploy with specific VPC (auto-detect subnet)
-echo   %~nx0 --vpc-id vpc-12345 --subnet-id subnet-67890  # Deploy with specific network
-echo   %~nx0 --instance-type t3.xlarge --volume-size 200   # Deploy with larger specs
+echo   %~nx0 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole
+echo   %~nx0 -s my-build-server -r us-west-2 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole
+echo   %~nx0 --vpc-id vpc-12345 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole
+echo   %~nx0 --instance-type t3.xlarge --volume-size 200 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole
+echo.
+echo Note: The IAM role must include AmazonSSMManagedInstanceCore policy for SSM access
+echo       and ECR permissions for container image operations.
 goto :eof
 
 :parse_args
@@ -277,8 +242,8 @@ if "%~1"=="--subnet-id" (
     goto :parse_args
 )
 
-if "%~1"=="--key-pair" (
-    set "KEY_PAIR_NAME=%~2"
+if "%~1"=="--instance-role-arn" (
+    set "INSTANCE_ROLE_ARN=%~2"
     shift
     shift
     goto :parse_args
@@ -326,6 +291,13 @@ call :print_status "Starting Windows Build EC2 deployment..."
 call :print_status "Stack Name: %STACK_NAME%"
 call :print_status "Region: %REGION%"
 
+REM Check required parameters
+if "%INSTANCE_ROLE_ARN%"=="" (
+    call :print_error "Instance Role ARN is required. Use --instance-role-arn parameter."
+    call :print_error "Example: --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+    exit /b 1
+)
+
 call :check_prerequisites
 if errorlevel 1 exit /b 1
 
@@ -354,9 +326,6 @@ if "%VPC_ID%"=="" (
     )
 )
 
-call :setup_key_pair
-if errorlevel 1 exit /b 1
-
 call :confirm_deployment
 if errorlevel 2 (
     call :print_warning "Deployment cancelled."
@@ -371,11 +340,5 @@ call :get_stack_outputs
 
 call :print_status "Deployment completed successfully!"
 call :print_warning "Please wait 5-10 minutes for the instance to complete its initialization before connecting."
-
-REM Get Windows Administrator password
-echo.
-call :print_status "To get the Windows Administrator password, run:"
-echo aws ec2 get-password-data --instance-id %INSTANCE_ID% --priv-launch-key %KEY_PAIR_NAME%.pem --region %REGION%
-echo.
 
 endlocal

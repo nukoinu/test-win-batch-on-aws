@@ -10,9 +10,24 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet ID for the EC2 instance (should be public subnet for internet access)
     
-  KeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: EC2 Key Pair for Windows instance access
+  InstanceRoleArn:
+    Type: String
+    Description: |
+      ARN of the existing IAM role to attach to the EC2 instance. 
+      The role must include the following permissions:
+      - AmazonSSMManagedInstanceCore (managed policy) for SSM Session Manager access
+      - ECR access permissions for container image operations:
+        * ecr:GetAuthorizationToken
+        * ecr:BatchCheckLayerAvailability
+        * ecr:GetDownloadUrlForLayer
+        * ecr:BatchGetImage
+        * ecr:InitiateLayerUpload
+        * ecr:UploadLayerPart
+        * ecr:CompleteLayerUpload
+        * ecr:PutImage
+        * ecr:CreateRepository
+        * ecr:DescribeRepositories
+      Example: arn:aws:iam::123456789012:role/EC2SSMRole
     
   InstanceType:
     Type: String
@@ -29,11 +44,6 @@ Parameters:
       - c5.xlarge
       - c5.2xlarge
       
-  AllowedCIDR:
-    Type: String
-    Default: 0.0.0.0/0
-    Description: CIDR block allowed to access the instance via RDP (recommend restricting to your IP)
-    
   VolumeSize:
     Type: Number
     Default: 100
@@ -48,22 +58,7 @@ Resources:
     Properties:
       GroupDescription: Security group for Windows build EC2 instance
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 3389
-          ToPort: 3389
-          CidrIp: !Ref AllowedCIDR
-          Description: RDP access
-        - IpProtocol: tcp
-          FromPort: 5985
-          ToPort: 5985
-          CidrIp: !Ref AllowedCIDR
-          Description: WinRM HTTP
-        - IpProtocol: tcp
-          FromPort: 5986
-          ToPort: 5986
-          CidrIp: !Ref AllowedCIDR
-          Description: WinRM HTTPS
+      SecurityGroupIngress: []
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -72,71 +67,13 @@ Resources:
         - Key: Name
           Value: !Sub '${AWS::StackName}-windows-build-sg'
 
-  # IAM Role for Windows Build Instance
-  WindowsBuildInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        - PolicyName: ECRAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ecr:GetAuthorizationToken
-                  - ecr:BatchCheckLayerAvailability
-                  - ecr:GetDownloadUrlForLayer
-                  - ecr:BatchGetImage
-                  - ecr:InitiateLayerUpload
-                  - ecr:UploadLayerPart
-                  - ecr:CompleteLayerUpload
-                  - ecr:PutImage
-                  - ecr:CreateRepository
-                  - ecr:DescribeRepositories
-                Resource: '*'
-        - PolicyName: BatchAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - batch:*
-                  - ecs:*
-                  - iam:GetRole
-                  - iam:PassRole
-                  - logs:*
-                Resource: '*'
-        - PolicyName: CloudFormationAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - cloudformation:*
-                  - ec2:*
-                  - iam:*
-                Resource: '*'
-      Path: /
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-windows-build-role'
-
-  # Instance Profile
+  # Instance Profile for existing role
   WindowsBuildInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: /
       Roles:
-        - !Ref WindowsBuildInstanceRole
+        - !Select [1, !Split ["role/", !Ref InstanceRoleArn]]
 
   # Windows Build EC2 Instance
   WindowsBuildInstance:
@@ -144,7 +81,6 @@ Resources:
     Properties:
       ImageId: !Sub '{{resolve:ssm:/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base}}'
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyPairName
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref WindowsBuildSecurityGroup
@@ -222,45 +158,56 @@ Resources:
               [Parameter(Mandatory=`$true)]
               [string]`$RepositoryName,
               [string]`$ImageTag = "latest",
-              [string]`$DockerfilePath = ".\Dockerfile.windows-native"
+              [string]`$DockerfilePath = ".\Dockerfile.windows-native",
+              [switch]`$PushToECR
           )
           
           `$region = "${AWS::Region}"
           `$accountId = (aws sts get-caller-identity --query Account --output text)
           `$ecrEndpoint = "`$accountId.dkr.ecr.`$region.amazonaws.com"
           `$fullImageName = "`$ecrEndpoint/`$RepositoryName:`$ImageTag"
+          `$localImageName = "`$RepositoryName:`$ImageTag"
           
-          Write-Host "Building image: `$fullImageName"
+          Write-Host "Building image: `$localImageName"
           
           # Build the Docker image
-          docker build -t `$RepositoryName -f `$DockerfilePath .
+          docker build -t `$localImageName -f `$DockerfilePath .
           if (`$LASTEXITCODE -ne 0) {
               Write-Error "Docker build failed"
               exit 1
           }
           
-          # Tag the image
-          docker tag `$RepositoryName `$fullImageName
+          Write-Host "Successfully built `$localImageName"
           
-          # Login to ECR
-          & "C:\workspace\ecr-login.ps1"
-          
-          # Create ECR repository if it doesn't exist
-          aws ecr describe-repositories --repository-names `$RepositoryName --region `$region 2>$null
-          if (`$LASTEXITCODE -ne 0) {
-              Write-Host "Creating ECR repository: `$RepositoryName"
-              aws ecr create-repository --repository-name `$RepositoryName --region `$region
-          }
-          
-          # Push the image
-          Write-Host "Pushing image to ECR..."
-          docker push `$fullImageName
-          
-          if (`$LASTEXITCODE -eq 0) {
-              Write-Host "Successfully pushed `$fullImageName"
+          if (`$PushToECR) {
+              Write-Host "Preparing to push to ECR: `$fullImageName"
+              
+              # Tag the image for ECR
+              docker tag `$localImageName `$fullImageName
+              
+              # Login to ECR
+              & "C:\workspace\ecr-login.ps1"
+              
+              # Create ECR repository if it doesn't exist
+              aws ecr describe-repositories --repository-names `$RepositoryName --region `$region 2>$null
+              if (`$LASTEXITCODE -ne 0) {
+                  Write-Host "Creating ECR repository: `$RepositoryName"
+                  aws ecr create-repository --repository-name `$RepositoryName --region `$region
+              }
+              
+              # Push the image
+              Write-Host "Pushing image to ECR..."
+              docker push `$fullImageName
+              
+              if (`$LASTEXITCODE -eq 0) {
+                  Write-Host "Successfully pushed `$fullImageName"
+              } else {
+                  Write-Error "Failed to push image"
+                  exit 1
+              }
           } else {
-              Write-Error "Failed to push image"
-              exit 1
+              # List the created image
+              docker images `$RepositoryName
           }
           "@
           Set-Content -Path "C:\workspace\build-and-deploy.ps1" -Value $buildScript
@@ -282,52 +229,56 @@ Resources:
           
           ## Remote Access
           
-          ### PowerShell Remote Connection (Recommended)
-          From your local PowerShell (as Administrator):
+          ### SSM Session Manager (Recommended)
+          Use AWS Systems Manager Session Manager to connect to the instance:
           
-          1. First, test connectivity:
-             ```powershell
-             Test-WSMan -ComputerName <INSTANCE_PUBLIC_IP> -Port 5985
-             ```
-          
-          2. Connect to the remote session:
-             ```powershell
-             Enter-PSSession -ComputerName <INSTANCE_PUBLIC_IP> -Credential (Get-Credential) -Port 5985
-             ```
-          
-          3. When prompted, enter the EC2 instance credentials:
-             - Username: Administrator
-             - Password: Use the password retrieved via EC2 console or AWS CLI
-          
-          ### Getting Windows Password
-          Use AWS CLI or EC2 console to decrypt the administrator password:
           ```bash
-          aws ec2 get-password-data --instance-id <INSTANCE_ID> --priv-launch-key <PATH_TO_PRIVATE_KEY>
+          aws ssm start-session --target <INSTANCE_ID>
           ```
           
-          ### Alternative: RDP Connection
-          If RDP is preferred and available:
-          ```
-          mstsc /v:<INSTANCE_PUBLIC_IP>:3389
-          ```
+          Or use the AWS Console:
+          1. Go to EC2 Console
+          2. Select the instance
+          3. Click "Connect" > "Session Manager" > "Connect"
           
           ## Usage
           
-          1. Clone your repository to C:\workspace:
+          1. Connect via SSM Session Manager
+          2. Open PowerShell:
+             ```cmd
+             powershell
+             ```
+          
+          3. Navigate to workspace:
              ```powershell
              cd C:\workspace
+             ```
+          
+          4. Clone your repository:
+             ```powershell
              git clone <your-repository-url>
              ```
           
-          2. Use the build-and-deploy.ps1 script to build and push Docker images:
+          5. Build Docker images (local only):
              ```powershell
              cd C:\workspace\your-project
-             C:\workspace\build-and-deploy.ps1 -RepositoryName "your-repo-name" -ImageTag "v1.0"
+             C:\workspace\build-and-deploy.ps1 -RepositoryName "my-app" -ImageTag "v1.0"
              ```
           
-          3. Use ecr-login.ps1 to manually login to ECR if needed:
+          6. Build and push to ECR:
+             ```powershell
+             cd C:\workspace\your-project
+             C:\workspace\build-and-deploy.ps1 -RepositoryName "my-app" -ImageTag "v1.0" -PushToECR
+             ```
+          
+          7. Login to ECR manually (if needed):
              ```powershell
              C:\workspace\ecr-login.ps1
+             ```
+          
+          8. Run your built container locally:
+             ```powershell
+             docker run my-app:v1.0
              ```
           
           ## ECR Repository
@@ -339,33 +290,14 @@ Resources:
           - Docker is configured for Windows containers mode
           - Current user is added to docker-users group
           - AWS CLI is configured with instance role permissions
-          - PowerShell Remoting is enabled on ports 5985 (HTTP) and 5986 (HTTPS)
-          - WinRM service is configured for remote access
+          - Access is only available through AWS Systems Manager Session Manager
+          - This server supports both local builds and ECR deployment
           "@
           Set-Content -Path "C:\workspace\README.md" -Value $readme
           
-          # Configure PowerShell Remoting
-          Enable-PSRemoting -Force
-          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
-          
-          # Configure WinRM service
-          winrm quickconfig -q
-          winrm set winrm/config/service '@{AllowUnencrypted="true"}'
-          winrm set winrm/config/service/auth '@{Basic="true"}'
-          winrm set winrm/config/client/auth '@{Basic="true"}'
-          winrm set winrm/config/listener?Address=*+Transport=HTTP '@{Port="5985"}'
-          
-          # Restart WinRM service
-          Restart-Service WinRM
-          Set-Service -Name WinRM -StartupType Automatic
-          
-          # Configure Windows Firewall for WinRM
-          New-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -Enabled True
-          New-NetFirewallRule -DisplayName "Windows Remote Management (HTTPS-In)" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -Enabled True
-          
           # Signal completion
           Write-Host "Windows build server setup completed successfully"
-          Write-Host "PowerShell Remoting is enabled on ports 5985 (HTTP) and 5986 (HTTPS)"
+          Write-Host "Access is available through AWS Systems Manager Session Manager"
           
           # Restart to ensure all group memberships take effect
           Restart-Computer -Force
@@ -382,35 +314,3 @@ Outputs:
     Value: !Ref WindowsBuildInstance
     Export:
       Name: !Sub '${AWS::StackName}-InstanceId'
-      
-  InstancePublicIP:
-    Description: Public IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PublicIp
-    Export:
-      Name: !Sub '${AWS::StackName}-PublicIP'
-      
-  InstancePrivateIP:
-    Description: Private IP address of the Windows build server
-    Value: !GetAtt WindowsBuildInstance.PrivateIp
-    Export:
-      Name: !Sub '${AWS::StackName}-PrivateIP'
-      
-  PowerShellRemoteConnectionInfo:
-    Description: PowerShell Remote connection command
-    Value: !Sub 'Enter-PSSession -ComputerName ${WindowsBuildInstance.PublicIp} -Credential (Get-Credential) -Port 5985'
-    
-  PowerShellRemoteHTTPSConnectionInfo:
-    Description: PowerShell Remote HTTPS connection command (if HTTPS is configured)
-    Value: !Sub 'Enter-PSSession -ComputerName ${WindowsBuildInstance.PublicIp} -Credential (Get-Credential) -Port 5986 -UseSSL'
-    
-  WinRMTestCommand:
-    Description: Command to test WinRM connectivity
-    Value: !Sub 'Test-WSMan -ComputerName ${WindowsBuildInstance.PublicIp} -Port 5985'
-    
-  WorkspaceLocation:
-    Description: Workspace directory on the instance
-    Value: 'C:\workspace'
-    
-  ECREndpoint:
-    Description: ECR endpoint for this account and region
-    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'

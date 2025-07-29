@@ -78,24 +78,6 @@ get_network_info() {
     print_status "Found Subnet: $SUBNET_ID"
 }
 
-# Function to get or create key pair
-setup_key_pair() {
-    KEY_PAIR_NAME="windows-build-key"
-    
-    print_status "Checking for key pair: $KEY_PAIR_NAME"
-    
-    # Check if key pair exists
-    if aws ec2 describe-key-pairs --key-names "$KEY_PAIR_NAME" --region $REGION &> /dev/null; then
-        print_status "Key pair '$KEY_PAIR_NAME' already exists."
-    else
-        print_status "Creating new key pair: $KEY_PAIR_NAME"
-        aws ec2 create-key-pair --key-name "$KEY_PAIR_NAME" --region $REGION --query 'KeyMaterial' --output text > "${KEY_PAIR_NAME}.pem"
-        chmod 400 "${KEY_PAIR_NAME}.pem"
-        print_status "Key pair created and saved as ${KEY_PAIR_NAME}.pem"
-        print_warning "Please keep the ${KEY_PAIR_NAME}.pem file safe for RDP access."
-    fi
-}
-
 # Function to confirm deployment
 confirm_deployment() {
     echo ""
@@ -106,9 +88,9 @@ confirm_deployment() {
     echo "Region:           $REGION"
     echo "VPC ID:           $VPC_ID"
     echo "Subnet ID:        $SUBNET_ID"
-    echo "Key Pair:         $KEY_PAIR_NAME"
-    echo "Instance Type:    t3.large"
-    echo "Volume Size:      100 GB"
+    echo "Instance Role:    $INSTANCE_ROLE_ARN"
+    echo "Instance Type:    ${INSTANCE_TYPE:-t3.large}"
+    echo "Volume Size:      ${VOLUME_SIZE:-100} GB"
     echo "Template:         $TEMPLATE_FILE"
     echo "======================================"
     echo ""
@@ -135,17 +117,6 @@ confirm_deployment() {
 deploy_stack() {
     print_status "Deploying CloudFormation stack: $STACK_NAME"
     
-    # Get current public IP for security group
-    CURRENT_IP=$(curl -s https://checkip.amazonaws.com || echo "0.0.0.0")
-    if [ "$CURRENT_IP" != "0.0.0.0" ]; then
-        ALLOWED_CIDR="${CURRENT_IP}/32"
-        print_status "Restricting RDP access to your current IP: $ALLOWED_CIDR"
-    else
-        ALLOWED_CIDR="0.0.0.0/0"
-        print_warning "Could not determine your public IP. Allowing RDP from anywhere (0.0.0.0/0)."
-        print_warning "Please update the security group after deployment for better security."
-    fi
-    
     # Deploy the stack
     aws cloudformation deploy \
         --template-file "$TEMPLATE_FILE" \
@@ -153,10 +124,9 @@ deploy_stack() {
         --parameter-overrides \
             VpcId="$VPC_ID" \
             SubnetId="$SUBNET_ID" \
-            KeyPairName="$KEY_PAIR_NAME" \
-            AllowedCIDR="$ALLOWED_CIDR" \
-            InstanceType="t3.large" \
-            VolumeSize="100" \
+            InstanceRoleArn="$INSTANCE_ROLE_ARN" \
+            InstanceType="${INSTANCE_TYPE:-t3.large}" \
+            VolumeSize="${VOLUME_SIZE:-100}" \
         --capabilities CAPABILITY_IAM \
         --region $REGION
     
@@ -173,31 +143,27 @@ get_stack_outputs() {
     print_status "Getting stack outputs..."
     
     INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' --output text)
-    PUBLIC_IP=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`InstancePublicIP`].OutputValue' --output text)
-    ECR_ENDPOINT=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region $REGION --query 'Stacks[0].Outputs[?OutputKey==`ECREndpoint`].OutputValue' --output text)
     
     echo ""
     echo "======================================"
     echo "Windows Build Server Information"
     echo "======================================"
     echo "Instance ID: $INSTANCE_ID"
-    echo "Public IP: $PUBLIC_IP"
-    echo "ECR Endpoint: $ECR_ENDPOINT"
-    echo "Key Pair: $KEY_PAIR_NAME"
     echo ""
-    echo "RDP Connection:"
-    echo "  Host: $PUBLIC_IP"
-    echo "  Port: 3389"
-    echo "  Username: Administrator"
-    echo "  Key File: ${KEY_PAIR_NAME}.pem"
+    echo "SSM Connection:"
+    echo "  aws ssm start-session --target $INSTANCE_ID --region $REGION"
     echo ""
     echo "Workspace Location: C:\\workspace"
     echo ""
     echo "Usage Instructions:"
     echo "1. Wait for the instance to complete initialization (5-10 minutes)"
-    echo "2. Connect via RDP using the information above"
-    echo "3. Clone your repository to C:\\workspace"
-    echo "4. Use C:\\workspace\\build-and-deploy.ps1 to build and push Docker images"
+    echo "2. Connect via SSM Session Manager using the command above"
+    echo "3. Once connected, run: powershell"
+    echo "4. Navigate to workspace: cd C:\\workspace"
+    echo "5. Clone your repository to C:\\workspace"
+    echo "6. Use C:\\workspace\\build-and-deploy.ps1 to build Docker images locally or push to ECR"
+    echo "   - Local build: build-and-deploy.ps1 -RepositoryName \"my-app\" -ImageTag \"v1.0\""
+    echo "   - Build and push to ECR: build-and-deploy.ps1 -RepositoryName \"my-app\" -ImageTag \"v1.0\" -PushToECR"
     echo ""
     echo "======================================"
 }
@@ -207,18 +173,23 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -h, --help        Show this help message"
-    echo "  -s, --stack-name  Stack name (default: windows-build-ec2)"
-    echo "  -r, --region      AWS region (default: ap-northeast-1)"
-    echo "  --vpc-id          VPC ID (auto-detected if not specified)"
-    echo "  --subnet-id       Subnet ID (auto-detected if not specified)"
-    echo "  --key-pair        Key pair name (default: windows-build-key)"
+    echo "  -h, --help           Show this help message"
+    echo "  -s, --stack-name     Stack name (default: windows-build-ec2)"
+    echo "  -r, --region         AWS region (default: ap-northeast-1)"
+    echo "  --vpc-id             VPC ID (auto-detected if not specified)"
+    echo "  --subnet-id          Subnet ID (auto-detected if not specified)"
+    echo "  --instance-role-arn  IAM role ARN for EC2 instance (required)"
+    echo "  --instance-type      Instance type (default: t3.large)"
+    echo "  --volume-size        EBS volume size in GB (default: 100)"
     echo ""
     echo "Examples:"
-    echo "  $0                                    # Deploy with default settings"
-    echo "  $0 -s my-build-server -r us-west-2   # Deploy with custom name and region"
-    echo "  $0 --vpc-id vpc-12345                # Deploy with specific VPC (auto-detect subnet)"
-    echo "  $0 --vpc-id vpc-12345 --subnet-id subnet-67890  # Deploy with specific network"
+    echo "  $0 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+    echo "  $0 -s my-build-server -r us-west-2 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+    echo "  $0 --vpc-id vpc-12345 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+    echo "  $0 --instance-type t3.xlarge --volume-size 200 --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+    echo ""
+    echo "Note: The IAM role must include AmazonSSMManagedInstanceCore policy for SSM access"
+    echo "      and ECR permissions for container image operations."
 }
 
 # Parse command line arguments
@@ -244,8 +215,16 @@ while [[ $# -gt 0 ]]; do
             SUBNET_ID="$2"
             shift 2
             ;;
-        --key-pair)
-            KEY_PAIR_NAME="$2"
+        --instance-role-arn)
+            INSTANCE_ROLE_ARN="$2"
+            shift 2
+            ;;
+        --instance-type)
+            INSTANCE_TYPE="$2"
+            shift 2
+            ;;
+        --volume-size)
+            VOLUME_SIZE="$2"
             shift 2
             ;;
         *)
@@ -261,6 +240,13 @@ main() {
     print_status "Starting Windows Build EC2 deployment..."
     print_status "Stack Name: $STACK_NAME"
     print_status "Region: $REGION"
+    
+    # Check required parameters
+    if [ -z "$INSTANCE_ROLE_ARN" ]; then
+        print_error "Instance Role ARN is required. Use --instance-role-arn parameter."
+        print_error "Example: --instance-role-arn arn:aws:iam::123456789012:role/EC2SSMRole"
+        exit 1
+    fi
     
     check_prerequisites
     
@@ -284,7 +270,6 @@ main() {
         fi
     fi
     
-    setup_key_pair
     confirm_deployment
     deploy_stack
     get_stack_outputs

@@ -94,61 +94,48 @@ RDP Connection:
 
 ## インスタンスへの接続
 
-### RDP接続（推奨）
+### SSM Session Manager接続（推奨）
 
-1. **Windowsの場合:**
-   ```cmd
-   mstsc /v:203.0.113.1:3389
-   ```
+#### 前提条件: Session Manager プラグインのインストール
 
-2. **macOSの場合:**
-   - Microsoft Remote Desktop アプリを使用
-   - または `ssh -L 3389:203.0.113.1:3389 -i key.pem ec2-user@bastion-host` でポートフォワード
+**Linux/macOS:**
+```bash
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip" -o "sessionmanager-bundle.zip"
+unzip sessionmanager-bundle.zip
+sudo ./sessionmanager-bundle/install -i /usr/local/sessionmanagerplugin -b /usr/local/bin/session-manager-plugin
+```
 
-3. **Linuxの場合:**
-   ```bash
-   rdesktop -u Administrator 203.0.113.1:3389
-   ```
+**Windows:**
+```powershell
+Invoke-WebRequest -Uri "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPluginSetup.exe" -OutFile "SessionManagerPluginSetup.exe"
+Start-Process -FilePath "SessionManagerPluginSetup.exe" -ArgumentList "/S" -Wait
+```
 
-### 認証情報の取得
-
-Windows インスタンスのAdministratorパスワードを取得：
-
-#### Linux/macOS環境の場合
+#### SSM接続の実行
 
 ```bash
-aws ec2 get-password-data --instance-id i-1234567890abcdef0 --priv-launch-key windows-build-key.pem --region ap-northeast-1
+# 基本的なSSM接続
+aws ssm start-session --target i-1234567890abcdef0 --region ap-northeast-1
+
+# PowerShellセッションの開始
+aws ssm start-session --target i-1234567890abcdef0 --region ap-northeast-1 --document-name AWS-StartInteractiveCommand --parameters command="powershell.exe"
 ```
 
-#### Windows環境の場合
+### （オプション）RDPポートフォワーディング
 
-専用のバッチファイルを使用：
+RDPアクセスが必要な場合は、SSMを通してポートフォワーディングを使用：
 
-```cmd
-get-windows-password.bat
+```bash
+# SSMによるRDPポートフォワーディング
+aws ssm start-session --target i-1234567890abcdef0 --document-name AWS-StartPortForwardingSession --parameters "portNumber=3389,localPortNumber=13389" --region ap-northeast-1
+
+# 別ターミナルでローカルマシンからRDP接続
+mstsc /v:localhost:13389
 ```
 
-または手動で：
-
-```cmd
-aws ec2 get-password-data --instance-id i-1234567890abcdef0 --priv-launch-key windows-build-key.pem --region ap-northeast-1
-```
-
-#### パスワード取得のオプション
-
-```cmd
-REM デフォルト設定で取得
-get-windows-password.bat
-
-REM カスタムスタック名を指定
-get-windows-password.bat -s my-build-server
-
-REM 特定のインスタンスIDを指定
-get-windows-password.bat -i i-1234567890abcdef0
-
-REM ヘルプの表示
-get-windows-password.bat --help
-```
+**その他のRDP接続方法:**
+1. **macOS**: Microsoft Remote Desktop アプリで `localhost:13389` に接続
+2. **Linux**: `rdesktop -u Administrator localhost:13389`
 
 ## インスタンス初期化の確認
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # AWS環境設定
-AWS_REGION="us-east-1"
+AWS_REGION="ap-northeast-1"  # 実際のAWSリージョンを設定
 STACK_NAME_PREFIX="windows-test"
 VPC_ID=""  # 実際のVPC IDを設定
 SUBNET_IDS=""  # 実際のサブネットIDを設定（カンマ区切り）

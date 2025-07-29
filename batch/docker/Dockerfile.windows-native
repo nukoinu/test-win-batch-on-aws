@@ -4,8 +4,13 @@ FROM mcr.microsoft.com/windows/nanoserver:ltsc2022
 # 作業ディレクトリを設定
 WORKDIR C:\\app
 
-# ビルド済みのWindows EXEをコピー
-COPY countdown.exe C:\\app\\countdown.exe
+# EXEファイルをコンテナにコピー
+# ビルドコンテキスト内の test-executables ディレクトリからコピーする
+COPY test-executables\\countdown.exe C:\\app\\
+COPY test-executables\\countdown-i18n.exe C:\\app\\
 
-# デフォルトコマンド
+# 国際化ファイルもコピー
+COPY i18n\\ C:\\app\\i18n\\
+
+# デフォルトコマンド（10秒カウントダウン）
 CMD ["countdown.exe", "10"]

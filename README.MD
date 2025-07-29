@@ -2,12 +2,44 @@
 
 このリポジトリは、AWS上でWindowsのEXEファイルをAWS BatchやAWS Lambdaで利用可能かどうかを検証するためのリソースを管理するためのものです。
 
+## 🚀 クイックスタート
+
+すぐに開始したい場合は、[クイックスタートガイド](QUICKSTART.md)をご覧ください（所要時間: 約30分）。
+
+詳細な手順については、[構築手順書](DEPLOYMENT_PROCEDURE.md)をご参照ください。
+
 ## 目的
 
 - WindowsバイナリファイルのAWS Batch での実行可能性の検証
 - WindowsバイナリファイルのAWS Lambda での実行可能性の検証
 - 各サービスでの制約事項や課題の把握
 - 実行パフォーマンスやコストの評価
+
+## 構築手順（概要）
+
+1. **Windows EC2インスタンスの作成** - Dockerビルド環境として使用
+2. **SSMでのEC2アクセス** - Session Manager による安全な接続
+3. **EC2でのDockerイメージビルド** - WindowsコンテナイメージをECRにプッシュ
+4. **ECSタスク定義の作成** - コンテナ実行環境の定義
+5. **ECSクラスター・サービスの作成** - コンテナオーケストレーション環境
+6. **疎通確認** - ECSタスクでの動作確認
+7. **EXEファイルの配置** - `C:\Users\Public\Documents` に配置
+8. **AWS Batchの作成** - バッチ処理環境の構築
+
+### SSM接続
+
+Windows EC2への接続にはAWS Systems Manager Session Managerを使用します：
+
+```bash
+# SSM接続スクリプトの使用
+cd batch
+./connect-ssm.sh
+
+# 手動でのSSM接続
+aws ssm start-session --target <INSTANCE_ID> --region ap-northeast-1
+```
+
+詳細は [構築手順書](DEPLOYMENT_PROCEDURE.md) または [クイックスタートガイド](QUICKSTART.md) をご参照ください。
 
 ## 検証対象
 

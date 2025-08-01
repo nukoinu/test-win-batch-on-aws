@@ -1,0 +1,31 @@
+# Amazon Linux 2 ビルド・実行環境 用 Dockerfile
+
+FROM amazonlinux:2
+
+# 必要なパッケージをインストール
+RUN yum update -y && \
+    yum install -y \
+        gcc \
+        make \
+        git \
+        tar \
+        gzip \
+        which && \
+    yum clean all
+
+# 作業ディレクトリを作成
+WORKDIR /app
+
+# ソースファイルをコピー
+COPY countdown-linux.c .
+COPY i18n-linux.h .
+COPY build-amazon-linux.sh .
+
+# ビルドスクリプトに実行権限を付与
+RUN chmod +x build-amazon-linux.sh
+
+# プログラムをビルド
+RUN ./build-amazon-linux.sh
+
+# デフォルトコマンド
+CMD ["./countdown-linux", "10"]

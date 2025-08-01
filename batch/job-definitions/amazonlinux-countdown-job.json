@@ -1,0 +1,24 @@
+{
+  "family": "countdown-linux-batch",
+  "type": "container",
+  "containerProperties": {
+    "image": "REPOSITORY_URI_PLACEHOLDER",
+    "vcpus": 1,
+    "memory": 512,
+    "command": ["./countdown-linux", "Ref::countdown_seconds"],
+    "jobRoleArn": "BATCH_JOB_ROLE_ARN_PLACEHOLDER",
+    "environment": [
+      {
+        "name": "LANG",
+        "value": "ja_JP.UTF-8"
+      }
+    ]
+  },
+  "retryStrategy": {
+    "attempts": 2
+  },
+  "timeout": {
+    "attemptDurationSeconds": 3600
+  },
+  "platformCapabilities": ["EC2"]
+}

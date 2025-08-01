@@ -2,6 +2,8 @@
 
 このリポジトリは、AWS上でWindowsのEXEファイルをAWS BatchやAWS Lambdaで利用可能かどうかを検証するためのリソースを管理するためのものです。
 
+**🆕 Amazon Linux 2 対応**: このプロジェクトはWindows環境に加えて、Amazon Linux 2でもビルド・実行できるようになりました。詳細は [Amazon Linux 2 対応ガイド](docs/AMAZON_LINUX_GUIDE.md) をご覧ください。
+
 ## 🚀 クイックスタート
 
 すぐに開始したい場合は、[クイックスタートガイド](QUICKSTART.md)をご覧ください（所要時間: 約30分）。
@@ -12,8 +14,45 @@
 
 - WindowsバイナリファイルのAWS Batch での実行可能性の検証
 - WindowsバイナリファイルのAWS Lambda での実行可能性の検証
+- **Amazon Linux 2 でのネイティブビルド・実行の検証**
 - 各サービスでの制約事項や課題の把握
 - 実行パフォーマンスやコストの評価
+
+## 🌟 新機能: Amazon Linux 2 対応
+
+このプロジェクトは Windows だけでなく、**Amazon Linux 2** 環境でもビルド・実行できるようになりました：
+
+### Amazon Linux 2 の利点
+- **軽量**: Windowsコンテナと比較して約 25倍軽量（200MB vs 5GB）
+- **高速**: 起動時間が大幅に短縮
+- **コスト効率**: より少ないリソースで実行可能
+- **ネイティブ実行**: Wine等の互換レイヤー不要
+
+### クイックスタート（Amazon Linux 2版）
+
+```bash
+# 1. アプリケーションのビルド・デプロイ
+cd docker
+./build-amazonlinux.sh my-countdown-app
+
+# 2. AWS Batch環境のデプロイ
+cd ../batch
+./deploy-amazonlinux.sh --deploy-app
+
+# 3. テストジョブの実行
+aws batch submit-job \
+  --job-name countdown-test \
+  --job-queue amazonlinux-job-queue \
+  --job-definition amazonlinux-countdown-job \
+  --parameters '{"countdown":"30"}'
+
+# 4. 多重度テストの実行
+./run-concurrency-tests-amazonlinux.sh \
+  -q amazonlinux-job-queue \
+  -d amazonlinux-countdown-job
+```
+
+詳細は [Amazon Linux 2 対応ガイド](docs/AMAZON_LINUX_GUIDE.md) をご覧ください。
 
 ## 構築手順（概要）
 
@@ -45,12 +84,15 @@ aws ssm start-session --target <INSTANCE_ID> --region ap-northeast-1
 
 ### AWS Batch
 - Windows コンテナでのEXE実行
+- **Amazon Linux 2 ネイティブプログラムの実行**
 - ジョブキューとジョブ定義の設定
 - 実行時間とリソース使用量の測定
 - **多重度検証**: 複数ジョブの同時実行による性能への影響測定
+- **パフォーマンス比較**: Windows vs Amazon Linux 2
 
 ### AWS Lambda
 - LambdaからECS上のWindowsコンテナでEXE実行
+- **LambdaからECS上のAmazon Linux 2コンテナで実行**
 - API Gateway経由でのRESTful API提供
 - ECSタスクの起動・監視機能
 - CloudWatch Logsでの実行ログ収集
@@ -61,6 +103,8 @@ aws ssm start-session --target <INSTANCE_ID> --region ap-northeast-1
 ├── README.MD                 # このファイル
 ├── batch/                    # AWS Batch 関連のリソース
 │   ├── deploy-build-ec2.sh  # Windows Build EC2 デプロイスクリプト
+│   ├── deploy-amazonlinux.sh # Amazon Linux 2 Batch環境デプロイスクリプト
+│   ├── run-concurrency-tests-amazonlinux.sh # Amazon Linux 2版多重度テスト
 │   ├── WINDOWS_BUILD_EC2_GUIDE.md # Build EC2 使用ガイド
 │   ├── CONCURRENCY_TEST_GUIDE.md  # 多重度検証ガイド
 │   ├── concurrent-job-launcher.py # 多重度検証スクリプト
@@ -68,10 +112,17 @@ aws ssm start-session --target <INSTANCE_ID> --region ap-northeast-1
 │   ├── run-concurrency-tests.sh   # 自動テストシナリオ
 │   ├── docker/              # Dockerfiles
 │   ├── job-definitions/     # ジョブ定義
+│   │   ├── windows-countdown-job.json    # Windows用
+│   │   └── amazonlinux-countdown-job.json # Amazon Linux 2用
 │   └── cloudformation/      # CloudFormation テンプレート
-│       ├── windows-batch-stack.yaml    # AWS Batch スタック
+│       ├── windows-batch-stack.yaml    # AWS Batch スタック（Windows）
+│       ├── amazonlinux-batch-stack.yaml # AWS Batch スタック（Amazon Linux 2）
 │       ├── windows-ecs-stack.yaml      # ECS スタック
 │       └── windows-build-ec2-stack.yaml # Build EC2 スタック
+├── docker/                   # Docker関連ファイル
+│   ├── Dockerfile.amazonlinux    # Amazon Linux 2用 Dockerfile
+│   ├── build-amazonlinux.sh      # Amazon Linux 2用ビルドスクリプト
+│   └── ...                       # その他のDockerファイル
 ├── lambda/                   # AWS Lambda 関連のリソース
 │   ├── functions/           # Lambda 関数
 │   │   ├── ecs_task_launcher.py    # ECSタスク起動関数
@@ -87,8 +138,17 @@ aws ssm start-session --target <INSTANCE_ID> --region ap-northeast-1
 │   ├── requirements.txt           # Python依存関係
 │   ├── LAMBDA_ECS_GUIDE.md        # Lambda-ECS実行ガイド
 │   └── WINDOWS_DEPLOYMENT_GUIDE.md # Windows環境でのデプロイガイド
-├── test-executables/         # テスト用のWindows EXEファイル
+├── test-executables/         # テスト用の実行ファイル
+│   ├── countdown.c          # Windows版プログラム
+│   ├── countdown-linux.c    # Amazon Linux 2版プログラム
+│   ├── i18n.h              # Windows版国際化ヘッダー
+│   ├── i18n-linux.h        # Amazon Linux 2版国際化ヘッダー
+│   ├── build-amazon-linux.sh # Amazon Linux 2ビルドスクリプト
+│   ├── Makefile            # Makeビルド設定
+│   └── ...                 # その他のビルドファイル
 └── docs/                     # 検証結果やドキュメント
+    ├── AMAZON_LINUX_GUIDE.md # Amazon Linux 2対応ガイド
+    └── ...                    # その他のドキュメント
 ```
 
 ## 検証手順
@@ -177,7 +237,38 @@ $env:JOB_QUEUE = "your-windows-batch-queue"
 python analyze-test-results.py test-results\
 ```
 
-詳細は [CONCURRENCY_TEST_GUIDE.md](batch/CONCURRENCY_TEST_GUIDE.md) を参照してください。
+#### Amazon Linux 2 版多重度検証テスト
+
+Amazon Linux 2環境での高速・軽量な多重度テストが可能です：
+
+**Linux/macOS:**
+```bash
+cd batch
+
+# 環境のデプロイ（アプリケーションも同時）
+./deploy-amazonlinux.sh --deploy-app
+
+# 多重度テストの実行
+./run-concurrency-tests-amazonlinux.sh \
+  -q amazonlinux-job-queue \
+  -d amazonlinux-countdown-job \
+  -s "1,5,10,20,30" \
+  -t 30
+
+# 結果分析
+python3 analyze-test-results.py test-results-amazonlinux/
+```
+
+**Windows (PowerShell):**
+```powershell
+cd batch
+
+# WSL2を使用してLinux版を実行
+wsl bash -c "./deploy-amazonlinux.sh --deploy-app"
+wsl bash -c "./run-concurrency-tests-amazonlinux.sh -q amazonlinux-job-queue -d amazonlinux-countdown-job"
+```
+
+詳細は [Amazon Linux 2 対応ガイド](docs/AMAZON_LINUX_GUIDE.md) を参照してください。
 
 ### AWS Lambda での検証
 
@@ -207,9 +298,11 @@ python analyze-test-results.py test-results\
 
 ## 参考資料
 
+- [Amazon Linux 2 対応ガイド](docs/AMAZON_LINUX_GUIDE.md) 🆕
 - [AWS Batch User Guide](https://docs.aws.amazon.com/batch/)
 - [AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/)
 - [Wine Documentation](https://www.winehq.org/documentation)
+- [Amazon Linux 2 User Guide](https://docs.aws.amazon.com/amazon-linux-2/)
 
 ## ライセンス
 

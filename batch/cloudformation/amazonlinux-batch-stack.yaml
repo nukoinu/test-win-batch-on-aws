@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Amazon Linux 2 Batch Environment for countdown application'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs for the compute environment
+  
+  ECRRepositoryUri:
+    Type: String
+    Description: ECR repository URI for the countdown application
+    Default: ""
+  
+  InstanceTypes:
+    Type: CommaDelimitedList
+    Description: EC2 instance types for the compute environment
+    Default: "m5.large,c5.large"
+  
+  MinvCpus:
+    Type: Number
+    Description: Minimum vCPUs in the compute environment
+    Default: 0
+  
+  MaxvCpus:
+    Type: Number
+    Description: Maximum vCPUs in the compute environment
+    Default: 100
+  
+  DesiredvCpus:
+    Type: Number
+    Description: Desired vCPUs in the compute environment
+    Default: 0
+
+Resources:
+  # IAM Role for Batch Service
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+
+  # IAM Role for EC2 Instances
+  Ec2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  # Instance Profile
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref Ec2InstanceRole
+
+  # IAM Role for Batch Jobs
+  BatchJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: '*'
+
+  # Security Group for Batch
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Amazon Linux 2 Batch compute environment
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # Compute Environment
+  ComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      State: ENABLED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeResources:
+        Type: EC2
+        MinvCpus: !Ref MinvCpus
+        MaxvCpus: !Ref MaxvCpus
+        DesiredvCpus: !Ref DesiredvCpus
+        InstanceTypes: !Ref InstanceTypes
+        Subnets: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+        InstanceRole: !GetAtt Ec2InstanceProfile.Arn
+        Tags:
+          Name: amazonlinux-batch-compute
+          Environment: batch
+
+  # Job Queue
+  JobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      State: ENABLED
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref ComputeEnvironment
+
+  # Job Definition
+  JobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      Type: container
+      PlatformCapabilities:
+        - EC2
+      ContainerProperties:
+        Image: !Sub '${ECRRepositoryUri}:latest'
+        Vcpus: 1
+        Memory: 512
+        JobRoleArn: !GetAtt BatchJobRole.Arn
+        Environment:
+          - Name: LANG
+            Value: ja_JP.UTF-8
+          - Name: LC_ALL
+            Value: ja_JP.UTF-8
+      RetryStrategy:
+        Attempts: 2
+      Timeout:
+        AttemptDurationSeconds: 3600
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/batch/${AWS::StackName}'
+      RetentionInDays: 30
+
+Outputs:
+  ComputeEnvironmentArn:
+    Description: ARN of the compute environment
+    Value: !Ref ComputeEnvironment
+    Export:
+      Name: !Sub '${AWS::StackName}-ComputeEnvironment'
+
+  JobQueueArn:
+    Description: ARN of the job queue
+    Value: !Ref JobQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-JobQueue'
+
+  JobDefinitionArn:
+    Description: ARN of the job definition
+    Value: !Ref JobDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-JobDefinition'
+
+  BatchJobRoleArn:
+    Description: ARN of the Batch job role
+    Value: !GetAtt BatchJobRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BatchJobRole'
+
+  LogGroupName:
+    Description: Name of the CloudWatch log group
+    Value: !Ref LogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroup'

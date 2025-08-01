@@ -7,7 +7,7 @@ echo ===============================================
 REM 環境変数設定
 set ECR_REGISTRY=%1
 set IMAGE_TAG=%2
-set AWS_REGION=us-east-1
+set AWS_REGION=ap-northeast-1
 
 if "%ECR_REGISTRY%"=="" (
     echo エラー: ECRレジストリURLが指定されていません
